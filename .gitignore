@@ -1,0 +1,11 @@
+# 环境变量文件（包含敏感信息）
+.env
+
+# ACME 证书文件
+acme/acme.json
+acme/*.json
+
+# 动态配置文件（可选）
+dynamic/*.yml
+dynamic/*.yaml
+!dynamic/.gitkeep
