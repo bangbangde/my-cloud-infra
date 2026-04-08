@@ -1,0 +1,38 @@
+# Traefik Docker Compose Configuration
+# 用于部署 Traefik 反向代理，支持自动 HTTPS 和泛域名证书
+
+services:
+  traefik:
+    image: traefik:v3
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    environment:
+      - TENCENTCLOUD_SECRET_ID=${TENCENTCLOUD_SECRET_ID}
+      - TENCENTCLOUD_SECRET_KEY=${TENCENTCLOUD_SECRET_KEY}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - ./acme:/etc/traefik/acme
+    networks:
+      - traefik-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.middlewares=dashboard-ratelimit,dashboard-auth"
+      - "traefik.http.middlewares.dashboard-ratelimit.ratelimit.average=5"
+      - "traefik.http.middlewares.dashboard-ratelimit.ratelimit.burst=10"
+      - "traefik.http.middlewares.dashboard-ratelimit.ratelimit.period=1m"
+      - "traefik.http.middlewares.dashboard-auth.basicauth.users=${DASHBOARD_USERS}"
+
+networks:
+  traefik-net:
+    name: traefik-net
+    driver: bridge

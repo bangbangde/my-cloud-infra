@@ -1,0 +1,16 @@
+services:
+  nextjs-app:
+    image: ${IMAGE_NAME}
+    container_name: my-pages
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.my-pages.rule=Host(`${DOMAIN_NAME}`)"
+      - "traefik.http.routers.my-pages.entrypoints=websecure"
+      - "traefik.http.routers.my-pages.tls.certresolver=letsencrypt"
+    networks:
+      - traefik-net
+
+networks:
+  traefik-net:
+    external: true
