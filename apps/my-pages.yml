@@ -1,11 +1,11 @@
 services:
   my-pages:
-    image: ghcr.io/bangbangde/my-pages:${MY_PAGES_VERSION:latest}
+    image: ghcr.io/bangbangde/my-pages:latest
     container_name: my-pages
     restart: unless-stopped
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.my-pages.rule=Host(`${MY_PAGES_DOMAIN_NAME}`)"
+      - "traefik.http.routers.my-pages.rule=Host(`codebuff.tech`)"
       - "traefik.http.routers.my-pages.entrypoints=websecure"
       - "traefik.http.routers.my-pages.tls.certresolver=letsencrypt"
     networks:
