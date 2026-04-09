@@ -9,7 +9,6 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "8080:8080"
     environment:
       - TENCENTCLOUD_SECRET_ID=${TENCENTCLOUD_SECRET_ID}
       - TENCENTCLOUD_SECRET_KEY=${TENCENTCLOUD_SECRET_KEY}
