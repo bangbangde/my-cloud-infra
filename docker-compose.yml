@@ -12,8 +12,10 @@ services:
     environment:
       - TENCENTCLOUD_SECRET_ID=${TENCENTCLOUD_SECRET_ID}
       - TENCENTCLOUD_SECRET_KEY=${TENCENTCLOUD_SECRET_KEY}
-      - DOMAIN_NAME=${DOMAIN_NAME}
-      - ACME_EMAIL=${ACME_EMAIL}
+    command:
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--entryPoints.websecure.http.tls.domains.main=${DOMAIN_NAME}"
+      - "--entryPoints.websecure.http.tls.domains.sans=*.${DOMAIN_NAME}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik.yml:/etc/traefik/traefik.yml:ro

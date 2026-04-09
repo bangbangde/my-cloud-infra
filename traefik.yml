@@ -25,10 +25,6 @@ entryPoints:
     http:
       tls:
         certResolver: letsencrypt
-        domains:
-          - main: "${DOMAIN_NAME}"
-            sans:
-              - "*.${DOMAIN_NAME}"
 
 providers:
   docker:
@@ -42,7 +38,6 @@ providers:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: ${ACME_EMAIL}
       storage: /etc/traefik/acme/acme.json
       dnsChallenge:
         provider: tencentcloud
