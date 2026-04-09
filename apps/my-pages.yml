@@ -1,6 +1,6 @@
 services:
-  nextjs-app:
-    image: ghcr.io/bangbangde/my-pages:${MY_PAGES_VERSION}
+  my-pages:
+    image: ghcr.io/bangbangde/my-pages:${MY_PAGES_VERSION:latest}
     container_name: my-pages
     restart: unless-stopped
     labels:

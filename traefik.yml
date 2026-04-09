@@ -2,6 +2,16 @@ api:
   dashboard: true
   insecure: false
 
+# 全局日志配置
+log:
+  level: DEBUG  # 可选：DEBUG, INFO, WARN, ERROR
+  format: common
+
+# 访问日志配置（不填filePath则直接输出到stdout，docker logs可直接捕获）
+accessLog:
+  format: common
+  bufferingSize: 100
+
 entryPoints:
   web:
     address: ":80"
