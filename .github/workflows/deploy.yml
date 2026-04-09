@@ -47,7 +47,11 @@ jobs:
             git pull origin main
 
             echo "==> Updating service: $SERVICE"
-            docker compose -f compose/${SERVICE}.yml up -d
+            if [ "$SERVICE" == "traefik" ]; then
+              docker compose -f docker-compose.yml up -d
+            else
+              docker compose -f apps/${SERVICE}.yml up -d
+            fi
 
             echo "==> Cleanup unused images"
             docker image prune -f
