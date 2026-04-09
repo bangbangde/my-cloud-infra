@@ -46,11 +46,18 @@ jobs:
             echo "==> Pull latest code"
             git pull origin main
 
+            
             echo "==> Updating service: $SERVICE"
             if [ "$SERVICE" == "traefik" ]; then
               docker compose -f docker-compose.yml up -d
             else
+              echo "==> Login to GitHub Container Registry"
+              echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USER }}" --password-stdin 2>/dev/null
+
               docker compose -f apps/${SERVICE}.yml up -d
+
+              echo "==> Logout from GitHub Container Registry"
+              docker logout ghcr.io
             fi
 
             echo "==> Cleanup unused images"
