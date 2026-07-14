@@ -1,4 +1,4 @@
-name: Manual Deploy
+name: Auto Deploy
 
 on:
   workflow_dispatch:
@@ -6,26 +6,46 @@ on:
       service:
         description: "选择要部署的服务"
         required: true
-        type: choice
-        options:
-          - traefik
-          - my-pages
+        type: string
+        default: "my-pages"
 
       confirm:
         description: "输入 YES 确认部署"
         required: true
         default: "NO"
 
+  repository_dispatch:
+    types:
+      - app-update
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Validate confirmation
+      - name: Validate confirmation for manual trigger
+        if: github.event_name == 'workflow_dispatch'
         run: |
           if [ "${{ github.event.inputs.confirm }}" != "YES" ]; then
             echo "❌ Deploy cancelled. You must input YES."
             exit 1
+          fi
+
+      - name: Validate service from repository_dispatch
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          if [ -z "${{ github.event.client_payload.service }}" ]; then
+            echo "❌ service not specified in client_payload"
+            exit 1
+          fi
+
+      - name: Determine service to deploy
+        id: determine-service
+        run: |
+          if [ "${{ github.event_name }}" == "repository_dispatch" ]; then
+            echo "service=${{ github.event.client_payload.service }}" >> $GITHUB_OUTPUT
+          else
+            echo "service=${{ github.event.inputs.service }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Deploy via SSH
@@ -35,32 +55,101 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
+            # 设置脚本遇到错误立即退出
             set -e
 
-            SERVICE="${{ github.event.inputs.service }}"
+            # 获取要部署的服务名（从工作流步骤输出中获取）
+            SERVICE="${{ steps.determine-service.outputs.service }}"
 
             echo "==> Deploying $SERVICE"
 
+            # 切换到基础设施项目目录
             cd ~/my-cloud-infra
 
+            # 验证服务配置文件是否存在
+            if [ "$SERVICE" != "traefik" ] && [ ! -f "apps/${SERVICE}.yml" ]; then
+              echo "❌ Service configuration file not found: apps/${SERVICE}.yml"
+              echo "==> Available services:"
+              ls apps/*.yml 2>/dev/null || echo "No services found"
+              exit 1
+            fi
+
+            # 拉取最新代码（确保配置文件是最新的）
             echo "==> Pull latest code"
             git pull origin main
 
-            
-            echo "==> Updating service: $SERVICE"
+            # 区分 Traefik 和应用服务的部署逻辑
             if [ "$SERVICE" == "traefik" ]; then
-              docker compose -f docker-compose.yml up -d
+              # Traefik 部署：直接更新，无需登录镜像仓库
+              echo "==> Updating Traefik"
+              docker compose -f docker-compose.yml up -d --pull always --remove-orphans
             else
+              # 应用服务部署流程
+
+              # 1. 登录 GitHub Container Registry（用于拉取私有镜像）
               echo "==> Login to GitHub Container Registry"
               echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-              
-              docker compose -f apps/${SERVICE}.yml up -d
 
+              # 2. 记录当前运行容器的镜像 digest（用于回滚）
+              #    将完整镜像引用（如 ghcr.io/xxx@sha256:...）写入回滚文件
+              echo "==> Record current image digest for rollback"
+              if docker inspect $SERVICE &>/dev/null; then
+                CURRENT_DIGEST=$(docker inspect $SERVICE --format='{{index .RepoDigests 0}}')
+                echo "$CURRENT_DIGEST" > .rollback_digest_$SERVICE
+                echo "==> Current digest: $CURRENT_DIGEST"
+              else
+                echo "==> Container not running, no digest to record"
+              fi
+
+              # 3. 拉取最新镜像（确保本地有最新版本）
+              echo "==> Pull latest image"
+              docker compose -f apps/${SERVICE}.yml pull
+
+              # 4. 更新服务：启动新容器，移除旧容器（--remove-orphans）
+              echo "==> Update service: $SERVICE"
+              docker compose -f apps/${SERVICE}.yml up -d --remove-orphans
+
+              # 5. 登出镜像仓库（安全最佳实践）
               echo "==> Logout from GitHub Container Registry"
               docker logout ghcr.io
-            fi
 
-            echo "==> Cleanup unused images"
-            docker image prune -f
+              # 6. 等待容器启动（给应用一些初始化时间）
+              echo "==> Wait for container to start"
+              sleep 10
+
+              # 7. 健康检查：轮询容器健康状态，最多等待100秒（20次 × 5秒）
+              #    使用 Docker 内置的健康检查机制（需在 Dockerfile 中定义 HEALTHCHECK）
+              echo "==> Health check"
+              HEALTH="starting"
+              for i in {1..20}; do
+                HEALTH=$(docker inspect $SERVICE --format='{{.State.Health.Status}}' 2>/dev/null || echo "unhealthy")
+                if [ "$HEALTH" = "healthy" ]; then
+                  echo "✅ Health check passed"
+                  break
+                fi
+                if [ "$HEALTH" = "unhealthy" ]; then
+                  echo "❌ Health check failed"
+                  exit 1
+                fi
+                echo "⏳ Waiting for health check... ($i/20)"
+                sleep 5
+              done
+
+              # 检查是否超时
+              if [ "$HEALTH" != "healthy" ]; then
+                echo "❌ Health check timeout"
+                exit 1
+              fi
+
+              # 8. 清理旧镜像：保留最近5个镜像，按创建时间倒序删除多余的
+              #    动态从 compose 文件中提取镜像仓库地址，支持多应用
+              echo "==> Cleanup old images (keep last 5)"
+              IMAGE_REPO=$(docker compose -f apps/${SERVICE}.yml config --images 2>/dev/null | head -1 | cut -d':' -f1)
+              if [ -n "$IMAGE_REPO" ]; then
+                docker images "$IMAGE_REPO" --format "{{.CreatedAt}}	{{.ID}}" | sort -r | awk -F'\\t' 'NR>5 {print $2}' | xargs -r docker rmi -f 2>/dev/null || true
+              else
+                echo "==> Could not determine image repository, skipping cleanup"
+              fi
+            fi
 
             echo "✅ Deploy finished"

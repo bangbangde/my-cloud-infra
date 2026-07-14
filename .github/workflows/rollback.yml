@@ -1,0 +1,125 @@
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "输入要回滚的服务名（如 my-pages、codebuff-next）"
+        required: true
+        type: string
+        default: "my-pages"
+
+      confirm:
+        description: "输入 YES 确认回滚"
+        required: true
+        default: "NO"
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "YES" ]; then
+            echo "❌ Rollback cancelled. You must input YES."
+            exit 1
+          fi
+
+      - name: Rollback via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            # 设置脚本遇到错误立即退出
+            set -e
+
+            # 获取要回滚的服务名（从工作流输入参数中获取）
+            SERVICE="${{ github.event.inputs.service }}"
+
+            echo "==> Rolling back $SERVICE"
+
+            # 切换到基础设施项目目录
+            cd ~/my-cloud-infra
+
+            # 回滚文件路径：记录上一次部署的镜像 digest
+            ROLLBACK_FILE=".rollback_digest_$SERVICE"
+
+            # 检查回滚文件是否存在，不存在则提示可用镜像并退出
+            if [ ! -f "$ROLLBACK_FILE" ]; then
+              echo "❌ Rollback digest file not found: $ROLLBACK_FILE"
+              echo "==> Available images for rollback:"
+              # 动态从 compose 文件中提取镜像仓库地址，支持多应用
+              IMAGE_REPO=$(docker compose -f apps/${SERVICE}.yml config --images 2>/dev/null | head -1 | cut -d':' -f1)
+              docker images "$IMAGE_REPO" --format "{{.Tag}} {{.ID}}"
+              exit 1
+            fi
+
+            # 读取回滚 digest（完整镜像引用，如 ghcr.io/xxx@sha256:...）
+            ROLLBACK_DIGEST=$(cat "$ROLLBACK_FILE")
+            echo "==> Rollback digest: $ROLLBACK_DIGEST"
+
+            # 1. 登录 GitHub Container Registry（用于拉取私有镜像）
+            echo "==> Login to GitHub Container Registry"
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            # 2. 拉取回滚镜像（确保本地有该版本的镜像）
+            echo "==> Pull rollback image"
+            docker pull "$ROLLBACK_DIGEST"
+
+            # 3. 在回滚前记录当前运行容器的 digest（用于再次回滚）
+            #    这样如果回滚后发现问题，可以再次回滚到本次回滚前的版本
+            echo "==> Record current digest before rollback"
+            if docker inspect $SERVICE &>/dev/null; then
+              CURRENT_DIGEST=$(docker inspect $SERVICE --format='{{index .RepoDigests 0}}')
+              echo "$CURRENT_DIGEST" > "$ROLLBACK_FILE"
+              echo "==> Saved current digest for potential re-rollback: $CURRENT_DIGEST"
+            fi
+
+            # 4. 停止当前容器
+            echo "==> Stop current container"
+            docker compose -f apps/${SERVICE}.yml down
+
+            # 5. 使用 digest 启动回滚容器
+            #    动态生成环境变量名：my-pages → MY_PAGES_FULL_IMAGE
+            #    设置 FULL_IMAGE 变量会覆盖 yml 中的镜像配置，使用精确的 digest
+            echo "==> Start rollback container with digest"
+            SERVICE_FULL_IMAGE=$(echo "$SERVICE" | tr '-' '_' | awk '{print toupper($0)"_FULL_IMAGE"}')
+            export "$SERVICE_FULL_IMAGE=$ROLLBACK_DIGEST"
+            docker compose -f apps/${SERVICE}.yml up -d
+
+            # 6. 登出镜像仓库（安全最佳实践）
+            echo "==> Logout from GitHub Container Registry"
+            docker logout ghcr.io
+
+            # 7. 等待容器启动（给应用一些初始化时间）
+            echo "==> Wait for container to start"
+            sleep 10
+
+            # 8. 健康检查：轮询容器健康状态，最多等待100秒（20次 × 5秒）
+            #    使用 Docker 内置的健康检查机制（需在 Dockerfile 中定义 HEALTHCHECK）
+            echo "==> Health check after rollback"
+            HEALTH="starting"
+            for i in {1..20}; do
+              HEALTH=$(docker inspect $SERVICE --format='{{.State.Health.Status}}' 2>/dev/null || echo "unhealthy")
+              if [ "$HEALTH" = "healthy" ]; then
+                echo "✅ Rollback successful"
+                break
+              fi
+              if [ "$HEALTH" = "unhealthy" ]; then
+                echo "❌ Rollback health check failed"
+                exit 1
+              fi
+              echo "⏳ Waiting for health check... ($i/20)"
+              sleep 5
+            done
+
+            # 检查是否超时
+            if [ "$HEALTH" != "healthy" ]; then
+              echo "❌ Rollback health check timeout"
+              exit 1
+            fi
+
+            echo "✅ Rollback finished"
