@@ -6,150 +6,186 @@ on:
       service:
         description: "选择要部署的服务"
         required: true
-        type: string
-        default: "my-pages"
-
+        type: choice
+        default: my-pages
+        options:
+          - my-pages
+          - codebuff-next
+          - traefik
       confirm:
-        description: "输入 YES 确认部署"
+        description: "确认部署"
         required: true
+        type: choice
         default: "NO"
-
+        options:
+          - "NO"
+          - "YES"
   repository_dispatch:
     types:
       - app-update
 
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Validate confirmation for manual trigger
-        if: github.event_name == 'workflow_dispatch'
+      - name: Validate request
+        id: request
+        shell: bash
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          IMAGE_TAG: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.image_tag || '' }}
+          SERVICE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.service || inputs.service }}
         run: |
-          if [ "${{ github.event.inputs.confirm }}" != "YES" ]; then
-            echo "❌ Deploy cancelled. You must input YES."
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "$CONFIRM" != "YES" ]]; then
+            echo "❌ Deploy cancelled. Select YES to confirm."
             exit 1
           fi
 
-      - name: Validate service from repository_dispatch
-        if: github.event_name == 'repository_dispatch'
-        run: |
-          if [ -z "${{ github.event.client_payload.service }}" ]; then
-            echo "❌ service not specified in client_payload"
+          case "$SERVICE" in
+            my-pages|codebuff-next|traefik) ;;
+            *)
+              echo "❌ Unsupported service: $SERVICE"
+              exit 1
+              ;;
+          esac
+
+          if [[ -n "$IMAGE_TAG" && ! "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "❌ Invalid image tag."
             exit 1
           fi
 
-      - name: Determine service to deploy
-        id: determine-service
-        run: |
-          if [ "${{ github.event_name }}" == "repository_dispatch" ]; then
-            echo "service=${{ github.event.client_payload.service }}" >> $GITHUB_OUTPUT
-          else
-            echo "service=${{ github.event.inputs.service }}" >> $GITHUB_OUTPUT
-          fi
+          printf 'service=%s\n' "$SERVICE" >> "$GITHUB_OUTPUT"
+          printf 'image_tag=%s\n' "$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
+        # v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
+          IMAGE_TAG: ${{ steps.request.outputs.image_tag }}
+          SERVICE: ${{ steps.request.outputs.service }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: GHCR_TOKEN,GHCR_USERNAME,IMAGE_TAG,SERVICE
+          command_timeout: 20m
           script: |
-            # 设置脚本遇到错误立即退出
-            set -e
+            set -Eeuo pipefail
 
-            # 获取要部署的服务名（从工作流步骤输出中获取）
-            SERVICE="${{ steps.determine-service.outputs.service }}"
-
-            echo "==> Deploying $SERVICE"
-
-            # 切换到基础设施项目目录
             cd ~/my-cloud-infra
 
-            # 验证服务配置文件是否存在
-            if [ "$SERVICE" != "traefik" ] && [ ! -f "apps/${SERVICE}.yml" ]; then
-              echo "❌ Service configuration file not found: apps/${SERVICE}.yml"
-              echo "==> Available services:"
-              ls apps/*.yml 2>/dev/null || echo "No services found"
+            echo "==> Pull latest infrastructure configuration"
+            git pull --ff-only origin main
+
+            if [[ "$SERVICE" != "traefik" && ! -f "apps/${SERVICE}.yml" ]]; then
+              echo "❌ Service configuration not found: apps/${SERVICE}.yml"
               exit 1
             fi
 
-            # 拉取最新代码（确保配置文件是最新的）
-            echo "==> Pull latest code"
-            git pull origin main
+            echo "==> Deploying $SERVICE"
 
-            # 区分 Traefik 和应用服务的部署逻辑
-            if [ "$SERVICE" == "traefik" ]; then
-              # Traefik 部署：直接更新，无需登录镜像仓库
-              echo "==> Updating Traefik"
-              docker compose -f docker-compose.yml up -d --pull always --remove-orphans
+            if [[ "$SERVICE" == "traefik" ]]; then
+              docker compose -f docker-compose.yml config --quiet
+              docker compose -f docker-compose.yml up -d --pull always
+              echo "✅ Deploy finished"
+              exit 0
+            fi
+
+            COMPOSE_FILE="apps/${SERVICE}.yml"
+            VERSION_ENV="$(printf '%s' "$SERVICE" | tr '[:lower:]-' '[:upper:]_')_VERSION"
+
+            if [[ -n "$IMAGE_TAG" ]]; then
+              printf -v "$VERSION_ENV" '%s' "$IMAGE_TAG"
+              export "$VERSION_ENV"
+              echo "==> Using image tag: $IMAGE_TAG"
             else
-              # 应用服务部署流程
+              echo "==> Using version from .env or Compose defaults"
+            fi
 
-              # 1. 登录 GitHub Container Registry（用于拉取私有镜像）
-              echo "==> Login to GitHub Container Registry"
-              echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker compose -f "$COMPOSE_FILE" config --quiet
 
-              # 2. 记录当前运行容器的镜像 digest（用于回滚）
-              #    将完整镜像引用（如 ghcr.io/xxx@sha256:...）写入回滚文件
-              echo "==> Record current image digest for rollback"
-              if docker inspect $SERVICE &>/dev/null; then
-                CURRENT_DIGEST=$(docker inspect $SERVICE --format='{{index .RepoDigests 0}}')
-                echo "$CURRENT_DIGEST" > .rollback_digest_$SERVICE
+            logged_in=false
+            cleanup() {
+              if [[ "$logged_in" == true ]]; then
+                docker logout ghcr.io >/dev/null 2>&1 || true
+              fi
+            }
+            trap cleanup EXIT
+
+            echo "==> Login to GitHub Container Registry"
+            printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+            logged_in=true
+
+            echo "==> Record current image digest for rollback"
+            if CURRENT_IMAGE_ID=$(docker inspect "$SERVICE" --format='{{.Image}}' 2>/dev/null); then
+              CURRENT_DIGEST=$(docker image inspect "$CURRENT_IMAGE_ID" --format='{{index .RepoDigests 0}}' 2>/dev/null || true)
+              if [[ -n "$CURRENT_DIGEST" ]]; then
+                printf '%s\n' "$CURRENT_DIGEST" > ".rollback_digest_${SERVICE}"
                 echo "==> Current digest: $CURRENT_DIGEST"
               else
-                echo "==> Container not running, no digest to record"
+                echo "==> Current image has no repository digest; rollback record unchanged"
               fi
+            else
+              echo "==> Container is not running; rollback record unchanged"
+            fi
 
-              # 3. 拉取最新镜像（确保本地有最新版本）
-              echo "==> Pull latest image"
-              docker compose -f apps/${SERVICE}.yml pull
+            echo "==> Pull image"
+            docker compose -f "$COMPOSE_FILE" pull
 
-              # 4. 更新服务：启动新容器，移除旧容器（--remove-orphans）
-              echo "==> Update service: $SERVICE"
-              docker compose -f apps/${SERVICE}.yml up -d --remove-orphans
+            echo "==> Update service"
+            docker compose -f "$COMPOSE_FILE" up -d
 
-              # 5. 登出镜像仓库（安全最佳实践）
-              echo "==> Logout from GitHub Container Registry"
-              docker logout ghcr.io
-
-              # 6. 等待容器启动（给应用一些初始化时间）
-              echo "==> Wait for container to start"
-              sleep 10
-
-              # 7. 健康检查：轮询容器健康状态，最多等待100秒（20次 × 5秒）
-              #    使用 Docker 内置的健康检查机制（需在 Dockerfile 中定义 HEALTHCHECK）
-              echo "==> Health check"
-              HEALTH="starting"
-              for i in {1..20}; do
-                HEALTH=$(docker inspect $SERVICE --format='{{.State.Health.Status}}' 2>/dev/null || echo "unhealthy")
-                if [ "$HEALTH" = "healthy" ]; then
+            echo "==> Wait for service health"
+            HEALTH="starting"
+            for i in {1..20}; do
+              HEALTH=$(docker inspect "$SERVICE" --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' 2>/dev/null || true)
+              case "$HEALTH" in
+                healthy)
                   echo "✅ Health check passed"
                   break
-                fi
-                if [ "$HEALTH" = "unhealthy" ]; then
-                  echo "❌ Health check failed"
+                  ;;
+                running)
+                  echo "⚠️ Container is running but has no HEALTHCHECK"
+                  break
+                  ;;
+                unhealthy|exited|dead)
+                  echo "❌ Container state: ${HEALTH:-not found}"
+                  docker logs --tail 100 "$SERVICE" 2>&1 || true
                   exit 1
-                fi
-                echo "⏳ Waiting for health check... ($i/20)"
-                sleep 5
-              done
+                  ;;
+              esac
+              echo "⏳ Waiting for health check... ($i/20, state: ${HEALTH:-not found})"
+              sleep 5
+            done
 
-              # 检查是否超时
-              if [ "$HEALTH" != "healthy" ]; then
-                echo "❌ Health check timeout"
-                exit 1
-              fi
+            if [[ "$HEALTH" != "healthy" && "$HEALTH" != "running" ]]; then
+              echo "❌ Health check timed out (state: ${HEALTH:-not found})"
+              docker logs --tail 100 "$SERVICE" 2>&1 || true
+              exit 1
+            fi
 
-              # 8. 清理旧镜像：保留最近5个镜像，按创建时间倒序删除多余的
-              #    动态从 compose 文件中提取镜像仓库地址，支持多应用
-              echo "==> Cleanup old images (keep last 5)"
-              IMAGE_REPO=$(docker compose -f apps/${SERVICE}.yml config --images 2>/dev/null | head -1 | cut -d':' -f1)
-              if [ -n "$IMAGE_REPO" ]; then
-                docker images "$IMAGE_REPO" --format "{{.CreatedAt}}	{{.ID}}" | sort -r | awk -F'\\t' 'NR>5 {print $2}' | xargs -r docker rmi -f 2>/dev/null || true
-              else
-                echo "==> Could not determine image repository, skipping cleanup"
-              fi
+            echo "==> Cleanup old images (keep last 5)"
+            IMAGE_REF=$(docker compose -f "$COMPOSE_FILE" config --images | sed -n '1p')
+            IMAGE_REPO=$(printf '%s\n' "$IMAGE_REF" | sed -E 's/@sha256:.*$//; s#:[^/]+$##')
+            if [[ -n "$IMAGE_REPO" ]]; then
+              docker images "$IMAGE_REPO" --format '{{.CreatedAt}}\t{{.ID}}' |
+                sort -r |
+                awk -F '\t' 'NR > 5 { print $2 }' |
+                sort -u |
+                xargs -r docker rmi 2>/dev/null || true
             fi
 
             echo "✅ Deploy finished"
