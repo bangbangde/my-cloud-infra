@@ -9,3 +9,6 @@ acme/*.json
 dynamic/*.yml
 dynamic/*.yaml
 !dynamic/.gitkeep
+
+# 回滚 digest 文件（服务器生成）
+.rollback_digest_*
