@@ -5,6 +5,22 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TRAEFIK_DIR="$ROOT_DIR/infrastructure/traefik"
 APPS_DIR="$ROOT_DIR/apps"
+VALIDATION_DIRS=()
+VALIDATION_DIR=""
+
+cleanup() {
+  local directory
+  local temp_root=${TMPDIR:-/tmp}
+
+  for directory in "${VALIDATION_DIRS[@]}"; do
+    case "$directory" in
+      "$temp_root"/my-cloud-validate.*) rm -rf -- "$directory" ;;
+      *) printf 'WARNING: Refusing to remove unexpected path: %s\n' "$directory" >&2 ;;
+    esac
+  done
+}
+
+trap cleanup EXIT
 
 die() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -20,7 +36,7 @@ compose_config() {
     --project-directory "$directory" \
     --env-file "$env_file" \
     -f "$directory/compose.yaml" \
-    config --no-env-resolution "$@"
+    config "$@"
 }
 
 require_file() {
@@ -39,6 +55,23 @@ validate_runtime_env_templates() {
       's|^[[:space:]]*-[[:space:]]*path:[[:space:]]+\./([^[:space:]#]*runtime\.env)[[:space:]]*$|\1|p' \
       "$directory/compose.yaml"
   )
+}
+
+prepare_validation_stack() {
+  local source_directory=$1
+  local example
+  local name
+
+  VALIDATION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/my-cloud-validate.XXXXXX")"
+  VALIDATION_DIRS+=("$VALIDATION_DIR")
+  cp -- "$source_directory/compose.yaml" "$source_directory/.env.example" "$VALIDATION_DIR/"
+
+  for example in "$source_directory"/runtime.env.example "$source_directory"/*.runtime.env.example; do
+    [[ -f "$example" ]] || continue
+    name="$(basename -- "$example")"
+    cp -- "$example" "$VALIDATION_DIR/$name"
+    cp -- "$example" "$VALIDATION_DIR/${name%.example}"
+  done
 }
 
 command -v docker >/dev/null 2>&1 || die "Docker is required."
@@ -63,9 +96,11 @@ for file in compose.yaml .env.example runtime.env.example static.yaml dynamic/tl
   require_file "$TRAEFIK_DIR/$file"
 done
 validate_runtime_env_templates "$TRAEFIK_DIR"
+prepare_validation_stack "$TRAEFIK_DIR"
+traefik_validation_dir=$VALIDATION_DIR
 
-traefik_model="$(compose_config "$TRAEFIK_DIR" "$TRAEFIK_DIR/.env.example")"
-traefik_services="$(compose_config "$TRAEFIK_DIR" "$TRAEFIK_DIR/.env.example" --services)"
+traefik_model="$(compose_config "$traefik_validation_dir" "$traefik_validation_dir/.env.example")"
+traefik_services="$(compose_config "$traefik_validation_dir" "$traefik_validation_dir/.env.example" --services)"
 grep -Fx traefik <<<"$traefik_services" >/dev/null || die "Traefik service is required"
 grep -Fx socket-proxy <<<"$traefik_services" >/dev/null || die "socket-proxy service is required"
 grep -Eq '^    image: traefik:v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$traefik_model" \
@@ -88,10 +123,12 @@ for directory in "$APPS_DIR"/*; do
   require_file "$directory/compose.yaml"
   require_file "$directory/.env.example"
   validate_runtime_env_templates "$directory"
+  prepare_validation_stack "$directory"
+  app_validation_dir=$VALIDATION_DIR
 
-  app_model="$(compose_config "$directory" "$directory/.env.example")"
-  app_services="$(compose_config "$directory" "$directory/.env.example" --services)"
-  app_variables="$(compose_config "$directory" "$directory/.env.example" --variables)"
+  app_model="$(compose_config "$app_validation_dir" "$app_validation_dir/.env.example")"
+  app_services="$(compose_config "$app_validation_dir" "$app_validation_dir/.env.example" --services)"
+  app_variables="$(compose_config "$app_validation_dir" "$app_validation_dir/.env.example" --variables)"
 
   grep -Fx "$app" <<<"$app_services" >/dev/null \
     || die "Primary service in apps/$app/compose.yaml must be named $app"

@@ -8,7 +8,7 @@
 
 1. 应用目录必须是 `apps/my-app/`。
 2. Compose 文件固定为 `apps/my-app/compose.yaml`。
-3. Compose 项目名必须解析为 `my-app`；建议显式声明顶层 `name`。
+3. Compose 顶层 `name` 必须是 `my-app`。
 4. 主应用 service 必须命名为 `my-app`。
 5. 主镜像必须由 `IMAGE_REPOSITORY` 和 `IMAGE_TAG` 组合，不能硬编码部署账号或镜像命名空间。
 6. 不得声明 `container_name`。
@@ -70,7 +70,7 @@ services:
         required: true
 ```
 
-同时提交 `runtime.env.example`，但不能提交实际 `runtime.env`。需要按服务隔离变量时，使用成对的 `<service>.runtime.env` 与 `<service>.runtime.env.example`；校验脚本使用 Compose 的 `--no-env-resolution` 验证模型并确认模板存在，不会在真实栈目录生成临时运行时文件。运维脚本会在部署前要求实际文件存在。
+同时提交 `runtime.env.example`，但不能提交实际 `runtime.env`。需要按服务隔离变量时，使用成对的 `<service>.runtime.env` 与 `<service>.runtime.env.example`；校验脚本会把 Compose 文件和模板复制到受控临时目录完成模型验证，不会在真实栈目录生成运行时文件。运维脚本会在部署前要求实际文件存在。
 
 ## 私有数据库
 
