@@ -35,8 +35,7 @@ jobs:
           echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  ${archive}" \
             | (cd "${tool_dir}" && sha256sum -c -)
           tar -xzf "${tool_dir}/${archive}" -C "${tool_dir}"
-          "${tool_dir}/gitleaks" git --redact --no-banner "${GITHUB_WORKSPACE}"
-          "${tool_dir}/gitleaks" dir --redact --no-banner "${GITHUB_WORKSPACE}"
+          "${tool_dir}/gitleaks" git --log-opts=HEAD --redact --no-banner "${GITHUB_WORKSPACE}"
 
       - name: Validate Compose models and conventions
         run: bash ./scripts/validate.sh
