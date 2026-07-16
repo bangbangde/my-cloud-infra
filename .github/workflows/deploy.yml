@@ -1,17 +1,16 @@
-name: Auto Deploy
+name: Deploy
 
 on:
   workflow_dispatch:
     inputs:
       service:
-        description: "选择要部署的服务"
+        description: "Traefik 或 apps/ 下的应用目录名"
         required: true
-        type: choice
-        default: my-pages
-        options:
-          - my-pages
-          - codebuff-next
-          - traefik
+        type: string
+      image_tag:
+        description: "应用镜像标签；部署 Traefik 时留空"
+        required: false
+        type: string
       confirm:
         description: "确认部署"
         required: true
@@ -35,6 +34,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment: production
 
     steps:
       - name: Validate request
@@ -42,27 +42,40 @@ jobs:
         shell: bash
         env:
           CONFIRM: ${{ inputs.confirm }}
-          IMAGE_TAG: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.image_tag || '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          IMAGE_TAG: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.image_tag || inputs.image_tag }}
           SERVICE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.service || inputs.service }}
         run: |
           set -euo pipefail
 
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "$CONFIRM" != "YES" ]]; then
-            echo "❌ Deploy cancelled. Select YES to confirm."
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$CONFIRM" != "YES" ]]; then
+            echo "Deploy cancelled. Select YES to confirm."
             exit 1
           fi
 
-          case "$SERVICE" in
-            my-pages|codebuff-next|traefik) ;;
-            *)
-              echo "❌ Unsupported service: $SERVICE"
-              exit 1
-              ;;
-          esac
-
-          if [[ -n "$IMAGE_TAG" && ! "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
-            echo "❌ Invalid image tag."
+          if [[ ! "$SERVICE" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+            echo "Invalid service name: $SERVICE"
             exit 1
+          fi
+
+          if [[ "$SERVICE" == "traefik" ]]; then
+            if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
+              echo "Traefik can only be deployed manually."
+              exit 1
+            fi
+            if [[ -n "$IMAGE_TAG" ]]; then
+              echo "Traefik deployment does not accept an image tag."
+              exit 1
+            fi
+          else
+            if [[ -z "$IMAGE_TAG" ]]; then
+              echo "Application deployment requires image_tag."
+              exit 1
+            fi
+            if [[ ! "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+              echo "Invalid image tag."
+              exit 1
+            fi
           fi
 
           printf 'service=%s\n' "$SERVICE" >> "$GITHUB_OUTPUT"
@@ -73,7 +86,7 @@ jobs:
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME || github.actor }}
           IMAGE_TAG: ${{ steps.request.outputs.image_tag }}
           SERVICE: ${{ steps.request.outputs.service }}
         with:
@@ -87,105 +100,23 @@ jobs:
 
             cd ~/my-cloud-infra
 
-            echo "==> Pull latest infrastructure configuration"
-            git pull --ff-only origin main
-
-            if [[ "$SERVICE" != "traefik" && ! -f "apps/${SERVICE}.yml" ]]; then
-              echo "❌ Service configuration not found: apps/${SERVICE}.yml"
+            exec 9>.ops.lock
+            if ! flock -n 9; then
+              echo "Another infrastructure operation is already running."
               exit 1
             fi
+            export OPS_LOCK_HELD=1
 
-            echo "==> Deploying $SERVICE"
+            git pull --ff-only origin main
 
             if [[ "$SERVICE" == "traefik" ]]; then
-              docker compose -f docker-compose.yml config --quiet
-              docker compose -f docker-compose.yml up -d --pull always
-              echo "✅ Deploy finished"
+              bash ./scripts/ops.sh deploy traefik
               exit 0
             fi
 
-            COMPOSE_FILE="apps/${SERVICE}.yml"
-            VERSION_ENV="$(printf '%s' "$SERVICE" | tr '[:lower:]-' '[:upper:]_')_VERSION"
-
-            if [[ -n "$IMAGE_TAG" ]]; then
-              printf -v "$VERSION_ENV" '%s' "$IMAGE_TAG"
-              export "$VERSION_ENV"
-              echo "==> Using image tag: $IMAGE_TAG"
-            else
-              echo "==> Using version from .env or Compose defaults"
-            fi
-
-            docker compose -f "$COMPOSE_FILE" config --quiet
-
-            logged_in=false
-            cleanup() {
-              if [[ "$logged_in" == true ]]; then
-                docker logout ghcr.io >/dev/null 2>&1 || true
-              fi
-            }
-            trap cleanup EXIT
-
-            echo "==> Login to GitHub Container Registry"
-            printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
-            logged_in=true
-
-            echo "==> Record current image digest for rollback"
-            if CURRENT_IMAGE_ID=$(docker inspect "$SERVICE" --format='{{.Image}}' 2>/dev/null); then
-              CURRENT_DIGEST=$(docker image inspect "$CURRENT_IMAGE_ID" --format='{{index .RepoDigests 0}}' 2>/dev/null || true)
-              if [[ -n "$CURRENT_DIGEST" ]]; then
-                printf '%s\n' "$CURRENT_DIGEST" > ".rollback_digest_${SERVICE}"
-                echo "==> Current digest: $CURRENT_DIGEST"
-              else
-                echo "==> Current image has no repository digest; rollback record unchanged"
-              fi
-            else
-              echo "==> Container is not running; rollback record unchanged"
-            fi
-
-            echo "==> Pull image"
-            docker compose -f "$COMPOSE_FILE" pull
-
-            echo "==> Update service"
-            docker compose -f "$COMPOSE_FILE" up -d
-
-            echo "==> Wait for service health"
-            HEALTH="starting"
-            for i in {1..20}; do
-              HEALTH=$(docker inspect "$SERVICE" --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' 2>/dev/null || true)
-              case "$HEALTH" in
-                healthy)
-                  echo "✅ Health check passed"
-                  break
-                  ;;
-                running)
-                  echo "⚠️ Container is running but has no HEALTHCHECK"
-                  break
-                  ;;
-                unhealthy|exited|dead)
-                  echo "❌ Container state: ${HEALTH:-not found}"
-                  docker logs --tail 100 "$SERVICE" 2>&1 || true
-                  exit 1
-                  ;;
-              esac
-              echo "⏳ Waiting for health check... ($i/20, state: ${HEALTH:-not found})"
-              sleep 5
-            done
-
-            if [[ "$HEALTH" != "healthy" && "$HEALTH" != "running" ]]; then
-              echo "❌ Health check timed out (state: ${HEALTH:-not found})"
-              docker logs --tail 100 "$SERVICE" 2>&1 || true
+            if [[ ! -f "apps/${SERVICE}/compose.yaml" ]]; then
+              echo "Application not found: apps/${SERVICE}/compose.yaml"
               exit 1
             fi
 
-            echo "==> Cleanup old images (keep last 5)"
-            IMAGE_REF=$(docker compose -f "$COMPOSE_FILE" config --images | sed -n '1p')
-            IMAGE_REPO=$(printf '%s\n' "$IMAGE_REF" | sed -E 's/@sha256:.*$//; s#:[^/]+$##')
-            if [[ -n "$IMAGE_REPO" ]]; then
-              docker images "$IMAGE_REPO" --format '{{.CreatedAt}}\t{{.ID}}' |
-                sort -r |
-                awk -F '\t' 'NR > 5 { print $2 }' |
-                sort -u |
-                xargs -r docker rmi 2>/dev/null || true
-            fi
-
-            echo "✅ Deploy finished"
+            bash ./scripts/ops.sh deploy "$SERVICE" "$IMAGE_TAG"

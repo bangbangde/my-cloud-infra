@@ -1,0 +1,25 @@
+name: my-pages
+
+services:
+  my-pages:
+    image: ${IMAGE_REPOSITORY:?IMAGE_REPOSITORY is required}:${IMAGE_TAG:?IMAGE_TAG is required}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.my-pages.rule=Host(`${APP_DOMAIN:?APP_DOMAIN is required}`)"
+      - "traefik.http.routers.my-pages.entrypoints=websecure"
+      - "traefik.http.routers.my-pages.tls.certresolver=letsencrypt"
+    networks:
+      - traefik-net
+
+networks:
+  traefik-net:
+    external: true
+    name: traefik-net

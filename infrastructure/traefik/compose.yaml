@@ -1,0 +1,97 @@
+name: traefik
+
+services:
+  socket-proxy:
+    image: ghcr.io/tecnativa/docker-socket-proxy:v0.4.2@sha256:1f3a6f303320723d199d2316a3e82b2e2685d86c275d5e3deeaf182573b47476
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      EVENTS: "1"
+      INFO: "1"
+      NETWORKS: "1"
+      PING: "1"
+      POST: "0"
+      VERSION: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker-api
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:2375/_ping | grep -q OK"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  traefik:
+    image: traefik:v3.7.1
+    restart: unless-stopped
+    depends_on:
+      socket-proxy:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    env_file:
+      - path: ./runtime.env
+        required: true
+    command:
+      - "--configFile=/etc/traefik/static.yaml"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--entryPoints.websecure.http.tls.domains.main=${DOMAIN_NAME}"
+      - "--entryPoints.websecure.http.tls.domains.sans=*.${DOMAIN_NAME}"
+    volumes:
+      - ./static.yaml:/etc/traefik/static.yaml:ro
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - ./state/acme:/etc/traefik/acme
+    networks:
+      - traefik-net
+      - docker-api
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - traefik
+        - healthcheck
+        - --ping
+        - --ping.entrypoint=ping
+        - --entrypoints.ping.address=:8082
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.middlewares=dashboard-ratelimit,dashboard-auth,dashboard-headers"
+      - "traefik.http.middlewares.dashboard-ratelimit.ratelimit.average=5"
+      - "traefik.http.middlewares.dashboard-ratelimit.ratelimit.burst=10"
+      - "traefik.http.middlewares.dashboard-ratelimit.ratelimit.period=1m"
+      - "traefik.http.middlewares.dashboard-auth.basicauth.users=${DASHBOARD_USERS}"
+      - "traefik.http.middlewares.dashboard-headers.headers.framedeny=true"
+      - "traefik.http.middlewares.dashboard-headers.headers.contenttypenosniff=true"
+      - "traefik.http.middlewares.dashboard-headers.headers.referrerpolicy=no-referrer"
+
+networks:
+  traefik-net:
+    name: traefik-net
+    driver: bridge
+  docker-api:
+    internal: true

@@ -1,0 +1,56 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository for secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=8.30.1
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          tool_dir="$(mktemp -d)"
+          curl -fsSL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}" \
+            -o "${tool_dir}/${archive}"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  ${archive}" \
+            | (cd "${tool_dir}" && sha256sum -c -)
+          tar -xzf "${tool_dir}/${archive}" -C "${tool_dir}"
+          "${tool_dir}/gitleaks" git --redact --no-banner "${GITHUB_WORKSPACE}"
+          "${tool_dir}/gitleaks" dir --redact --no-banner "${GITHUB_WORKSPACE}"
+
+      - name: Validate Compose models and conventions
+        run: bash ./scripts/validate.sh
+
+      - name: Run ShellCheck
+        run: shellcheck ./scripts/*.sh
+
+      - name: Run actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=1.7.12
+          archive="actionlint_${version}_linux_amd64.tar.gz"
+          curl -fsSLO "https://github.com/rhysd/actionlint/releases/download/v${version}/${archive}"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  ${archive}" | sha256sum -c -
+          tar -xzf "${archive}"
+          "./actionlint_${version}_linux_amd64/actionlint"

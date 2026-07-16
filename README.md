@@ -1,248 +1,209 @@
 # My Cloud Infrastructure
 
-基于 Traefik 的云基础设施项目，提供自动 HTTPS、泛域名证书和简化的服务部署方案。
+本仓库用于维护服务器上的 Traefik 与 Docker Compose 应用，并通过统一运维脚本和 GitHub Actions 提供自动部署、手动指定版本部署及旧版本重新部署能力。
 
-## ✨ 特性
+服务器主机配置、密钥实际值、持久化业务数据和完整运行状态不由本仓库管理。
 
-- **自动 HTTPS** - 自动将 HTTP 流量重定向到 HTTPS
-- **泛域名证书** - 使用 Let's Encrypt 自动申请和续期泛域名 SSL 证书
-- **DNS 验证** - 支持腾讯云 DNS 验证，无需暴露 80 端口即可申请证书
-- **服务发现** - 基于 Docker 的自动服务发现和路由配置
-- **安全防护** - Dashboard 支持基础认证和访问频率限制
-- **动态配置** - 支持动态配置文件，无需重启即可更新路由规则
-- **CI/CD 集成** - GitHub Actions 自动化部署流程
-- **自动更新** - 应用镜像更新时自动触发部署
-- **健康检查** - 部署后自动验证服务健康状态
-- **一键回滚** - 支持基于镜像 digest 的快速回滚
+## 能力范围
 
-## 📋 前置要求
+- Traefik 反向代理、HTTPS 和 Docker 服务发现
+- 受限 Docker Socket Proxy、容器健康检查和优雅停止
+- 每个应用独立的 Compose 项目与环境文件
+- 应用镜像构建完成后的自动部署
+- 从 GitHub Actions 手动指定镜像标签部署
+- 部署失败时尝试恢复服务器上记录的旧标签
+- Compose、脚本和项目约定的持续验证
 
-- Docker Engine 20.10+
-- Docker Compose v2+
-- 域名（已解析到服务器 IP）
-- 腾讯云账号（用于 DNS 验证）
+## 目录结构
 
-## 🚀 快速开始
-
-### 1. 克隆项目
-
-```bash
-git clone https://github.com/bangbangde/my-cloud-infra.git
-cd my-cloud-infra
-```
-
-### 2. 配置环境变量
-
-```bash
-# 复制环境变量模板
-cp .env.example .env
-
-# 编辑环境变量
-vim .env
-```
-
-需要配置以下变量：
-
-| 变量名                    | 说明               | 示例                                                             |
-| ------------------------- | ------------------ | ---------------------------------------------------------------- |
-| `TENCENTCLOUD_SECRET_ID`  | 腾讯云 API 密钥 ID | 从[腾讯云控制台](https://console.cloud.tencent.com/cam/capi)获取 |
-| `TENCENTCLOUD_SECRET_KEY` | 腾讯云 API 密钥    | 从腾讯云控制台获取                                               |
-| `DOMAIN_NAME`             | 主域名             | `codebuff.tech`                                                  |
-| `ACME_EMAIL`              | 证书申请邮箱       | `your-email@example.com`                                         |
-| `DASHBOARD_USERS`         | Dashboard 认证信息 | 使用 `htpasswd` 生成                                             |
-| `MY_PAGES_VERSION`        | 应用版本           | `latest`                                                         |
-| `MY_PAGES_DOMAIN_NAME`    | 应用域名           | `codebuff.tech`                                                  |
-
-### 3. 生成 Dashboard 认证信息
-
-```bash
-# 使用 htpasswd 生成密码（需要安装 apache2-utils）
-htpasswd -nB admin | sed 's/\$/\$\$/g'
-
-# 或使用在线工具
-# https://hostingcanada.org/htpasswd-generator/
-```
-
-将生成的结果填入 `.env` 文件的 `DASHBOARD_USERS` 变量。
-
-### 4. 启动服务
-
-```bash
-# 启动 Traefik
-docker compose up -d
-
-# 启动应用（可选）
-docker compose -f apps/my-pages.yml up -d
-```
-
-### 5. 验证部署
-
-- **Dashboard**: 访问 `https://traefik.yourdomain.com`
-- **应用**: 访问 `https://yourdomain.com`
-
-## 📁 项目结构
-
-```
+```text
 my-cloud-infra/
-├── .github/
-│   └── workflows/
-│       ├── deploy.yml          # GitHub Actions 部署配置（支持自动触发）
-│       └── rollback.yml        # GitHub Actions 回滚配置
-├── acme/
-│   └── .gitkeep                # ACME 证书存储目录
+├── infrastructure/
+│   └── traefik/
+│       ├── compose.yaml
+│       ├── static.yaml
+│       ├── dynamic/
+│       ├── state/acme/
+│       ├── .env.example
+│       └── runtime.env.example
 ├── apps/
-│   └── my-pages.yml            # 应用服务配置示例
-├── dynamic/
-│   └── .gitkeep                # 动态配置目录
-├── .env.example                # 环境变量模板
-├── .gitignore                  # Git 忽略文件
-├── docker-compose.yml          # Traefik 服务配置
-├── traefik.yml                 # Traefik 静态配置
-└── README.md                   # 项目文档
+│   ├── my-pages/
+│   │   ├── compose.yaml
+│   │   └── .env.example
+│   └── codebuff-next/
+│       ├── compose.yaml
+│       └── .env.example
+├── scripts/
+│   ├── ops.sh
+│   └── validate.sh
+├── docs/
+│   ├── app-contract.md
+│   └── operations.md
+└── .github/workflows/
+    ├── deploy.yml
+    └── validate.yml
 ```
 
-## ⚙️ 配置说明
+仓库根目录不是 Compose 项目。所有 Compose 命令都应在具体栈目录执行，日常操作优先使用 `scripts/ops.sh`。
 
-### Traefik 配置
+## 环境文件边界
 
-主要配置文件 `traefik.yml` 包含：
+每个 Compose 栈只读取同目录下自己的环境文件：
 
-- **API 配置**: 启用 Dashboard，禁用不安全模式
-- **入口点配置**:
-  - `web` (80): 自动重定向到 HTTPS
-  - `websecure` (443): HTTPS 入口，自动申请证书
-- **服务发现**: Docker 和文件两种提供者
-- **证书解析器**: Let's Encrypt + 腾讯云 DNS 验证
+| 文件 | 用途 | Git |
+| --- | --- | --- |
+| `.env` | 当前环境的域名、镜像仓库等 Compose 插值，以及当前部署标签 | 忽略 |
+| `.env.example` | `.env` 字段模板 | 跟踪 |
+| `runtime.env` / `<service>.runtime.env` | 传入容器的运行时变量或密钥 | 忽略 |
+| 对应的 `*.env.example` | 运行时变量字段模板 | 跟踪 |
 
-### 添加新服务
+`.env` 不会因为存在就自动传入容器。容器运行时变量必须通过 Compose 的 `env_file` 或 `environment` 显式声明。运行时文件在 Compose 中设置 `required: true`，缺失时手动操作也会立即失败。
 
-1. 在 `apps/` 目录创建新的 Compose 文件：
-
-```yaml
-services:
-  my-service:
-    image: your-image:tag
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.my-service.rule=Host(`service.yourdomain.com`)"
-      - "traefik.http.routers.my-service.entrypoints=websecure"
-      - "traefik.http.routers.my-service.tls.certresolver=letsencrypt"
-    networks:
-      - traefik-net
-
-networks:
-  traefik-net:
-    external: true
-```
-
-2. 启动服务：
+### Traefik
 
 ```bash
-docker compose -f apps/my-service.yml up -d
+cp infrastructure/traefik/.env.example infrastructure/traefik/.env
+cp infrastructure/traefik/runtime.env.example infrastructure/traefik/runtime.env
 ```
 
-### 动态配置
+编辑两个文件：
 
-在 `dynamic/` 目录添加配置文件，支持：
+- `.env`：域名、ACME 邮箱和 Dashboard 认证信息
+- `runtime.env`：腾讯云 DNS API 凭据
 
-- 中间件配置（认证、限流等）
-- 路由规则
-- 服务配置
+Dashboard bcrypt 值使用 `htpasswd -nB admin` 生成，在 `.env` 中用单引号包裹并保留原始单个 `$`。这里不要执行旧版文档中的美元符号双写转换。
 
-示例 `dynamic/middleware.yml`：
+### 应用
 
-```yaml
-http:
-  middlewares:
-    redirect-www:
-      redirectRegex:
-        regex: "^https://www\\.(.+)"
-        replacement: "https://${1}"
-```
-
-## 🚢 部署
-
-### 手动部署
+每个应用先从模板创建自己的 `.env`：
 
 ```bash
-# 拉取最新代码
-git pull origin main
-
-# 重启服务
-docker compose up -d
-
-# 或重启特定服务
-docker compose -f apps/my-pages.yml up -d
+cp apps/my-pages/.env.example apps/my-pages/.env
 ```
 
-### GitHub Actions 自动部署
+首次部署前编辑其中的 `IMAGE_REPOSITORY` 和 `APP_DOMAIN`。`scripts/ops.sh deploy` 只更新 `IMAGE_TAG`，不会覆盖这些环境级配置。实际域名和镜像命名空间不进入公开仓库。
 
-项目包含两个 GitHub Actions 工作流：
+应用需要数据库连接等运行时变量时，另行创建 `runtime.env` 并在 Compose 中显式引用。
 
-#### 部署工作流（Auto Deploy）
+## 前置要求
 
-支持两种触发方式：
+- Linux 服务器
+- Docker Engine
+- Docker Compose 2.24+
+- Bash
+- `flock`（通常由 `util-linux` 提供）
+- 已解析到服务器的域名
+- 腾讯云 DNS API 凭据
 
-1. **手动触发**：在 Actions 页面选择 "Auto Deploy" 工作流，输入服务名（如 `my-pages`、`blog`、`api`）并输入 `YES` 确认
+## 运维命令
 
-2. **自动触发**：当应用镜像更新时，源仓库通过 `repository_dispatch` 事件发送服务名，自动触发对应服务的部署
+```bash
+# 验证全部配置
+bash scripts/ops.sh validate
 
-配置 Secrets：
+# 部署 Traefik
+bash scripts/ops.sh deploy traefik
+
+# 部署应用；建议使用不可变的 Git SHA 标签
+bash scripts/ops.sh deploy my-pages sha-abc123
+bash scripts/ops.sh deploy codebuff-next sha-def456
+
+# 查看状态
+bash scripts/ops.sh status
+bash scripts/ops.sh status my-pages
+
+# 查看日志或重启主服务
+bash scripts/ops.sh logs my-pages
+bash scripts/ops.sh restart my-pages
+```
+
+如需回退，使用同一个 Deploy 入口重新部署之前的不可变镜像标签，不再维护独立 Rollback 工作流。
+
+## 网络模型
+
+Traefik 栈创建并拥有 `traefik-net`，应用将它作为 external network 使用。应用服务不发布宿主机端口，由 Traefik 负责对外路由。
+
+Traefik 不直接挂载 Docker Socket。`socket-proxy` 是唯一挂载 Socket 的服务，并只在内部 `docker-api` 网络上开放 Traefik 服务发现需要的只读 API；该网络不发布宿主机端口。
+
+私有数据库或缓存由应用 Compose 创建 `internal: true` 的内部网络。应用同时加入 `traefik-net` 和内部网络，数据库只加入内部网络。
+
+共享 MySQL 等基础设施应放在 `infrastructure/<service>/`，并由该基础设施栈创建它提供给应用的网络；不维护独立的空网络 Compose 项目。
+
+## 运行安全与资源边界
+
+- Traefik 使用精确补丁版本；Socket Proxy 同时固定版本和镜像 digest。
+- 所有现有服务启用 `no-new-privileges`。
+- Docker `local` 日志驱动保留最多 3 个、每个约 10 MB 的日志文件，避免日志无限占用磁盘。
+- Traefik 常规日志使用 `INFO`；临时排障才切换为 `DEBUG`，完成后应恢复。
+- 默认 TLS 策略要求 TLS 1.2 或更高版本并启用严格 SNI；Dashboard 额外启用基础认证、限流和安全响应头。
+- Traefik 与 Socket Proxy 都有健康检查，Traefik 更新时为活动请求保留优雅停止窗口。
+- CPU 和内存限制应根据服务器上的 `docker stats` 观察结果设置，本仓库不使用未经测量的统一猜测值。
+
+## GitHub Actions
+
+### Deploy
+
+支持：
+
+- `workflow_dispatch` 手动部署 Traefik 或应用
+- `repository_dispatch: app-update` 自动部署应用
+
+基础设施仓库需要配置：
+
 | Secret | 说明 |
-|--------|------|
+| --- | --- |
 | `SERVER_HOST` | 服务器地址 |
-| `SERVER_USER` | SSH 用户名 |
+| `SERVER_USER` | SSH 用户 |
 | `SERVER_SSH_KEY` | SSH 私钥 |
-| `GHCR_TOKEN` | GitHub Container Registry 访问令牌 |
+| `GHCR_TOKEN` | 拉取私有 GHCR 镜像的令牌 |
+| `GHCR_USERNAME` | GHCR 令牌所属用户名；未设置时回退到触发者用户名 |
 
-部署流程：
+建议将这些 Secrets 配置在 `production` Environment。
 
-```
-代码拉取 → 记录当前镜像 digest（用于回滚）→ 拉取最新镜像 → 启动服务 → 健康检查 → 清理旧镜像
-```
-
-#### 回滚工作流（Rollback）
-
-当部署失败时，可手动触发回滚：
-
-1. 在 Actions 页面选择 "Rollback" 工作流
-2. 选择要回滚的服务并输入 `YES` 确认
-3. 系统自动使用上一次部署的镜像 digest 进行回滚
-
-### 源应用仓库配置
-
-在应用源仓库的 CI 配置中添加以下步骤，当镜像推送成功后自动触发部署：
+应用仓库推送镜像后发送：
 
 ```yaml
 - name: Trigger infrastructure deployment
-  uses: peter-evans/repository-dispatch@v3
+  # v4.0.1
+  uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697
   with:
     token: ${{ secrets.INFRA_REPO_TOKEN }}
-    repository: bangbangde/my-cloud-infra
+    repository: your-github-user/my-cloud-infra
     event-type: app-update
-    client-payload: '{"service": "my-pages"}'
+    client-payload: >-
+      {"service":"my-pages","image_tag":"sha-${{ github.sha }}"}
 ```
 
-需要在源仓库配置 Secret：
+`service` 必须对应 `apps/<service>/compose.yaml`，`image_tag` 必填。Traefik 只允许手动部署。
 
-- `INFRA_REPO_TOKEN`: 具有 `repo` 权限的 GitHub Personal Access Token
+### Validate
 
-**多应用支持**：当有多个应用服务时，只需在 `client-payload` 中指定对应的服务名即可。例如：
+Pull Request 和 main push 会验证：
 
-```yaml
-# my-pages 应用
-client-payload: '{"service": "my-pages"}'
+- 所有 Compose 模型
+- 应用目录和主 service 命名契约
+- 禁止 `container_name`
+- 禁止旧的应用专属版本变量
+- 禁止提交实际环境文件，以及在应用 Compose 中硬编码部署域名或镜像命名空间
+- Gitleaks 扫描当前工作树和完整 Git 历史
+- ShellCheck
+- actionlint
 
-# blog 应用
-client-payload: '{"service": "blog"}'
+## 公开仓库安全边界
 
-# api 应用
-client-payload: '{"service": "api"}'
-```
+仓库只提交可公开的配置结构和示例值。以下内容必须保留在服务器、GitHub Secrets 或其他密钥管理系统中：
 
-## 📚 相关资源
+- 实际 `.env`、`runtime.env` 和 `*.runtime.env`
+- `acme.json`、SSH 私钥、API Token、云厂商凭据和数据库密码
+- 不希望公开的服务器地址、实际业务域名和私有镜像命名空间
 
-- [Traefik 官方文档](https://doc.traefik.io/traefik/)
-- [Let's Encrypt 文档](https://letsencrypt.org/docs/)
-- [腾讯云 DNS API 文档](https://cloud.tencent.com/document/api/1427/56153)
-- [Docker Compose 文档](https://docs.docker.com/compose/)
+提交前运行 `bash scripts/validate.sh`；CI 还会使用 Gitleaks 检查工作树与完整提交历史。如果凭据曾经进入提交，删除当前文件并不等于完成处置：应先撤销或轮换凭据，再评估是否需要清理 Git 历史。
+
+Git 提交的作者姓名和邮箱也是公开历史的一部分；不希望公开真实邮箱时，应在产生新提交前配置 GitHub 提供的 `noreply` 地址。
+
+安全问题请按 [安全策略](SECURITY.md) 私下报告，不要在公开 Issue 中附带漏洞细节或凭据。
+
+## 文档
+
+- [应用 Compose 契约](docs/app-contract.md)
+- [服务器运维与旧布局迁移](docs/operations.md)

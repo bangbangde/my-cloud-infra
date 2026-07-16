@@ -1,14 +1,16 @@
-# 环境变量文件（包含敏感信息）
-.env
+# 每个 Compose 栈自己的插值与运行时环境文件
+**/.env
+**/runtime.env
+**/*.runtime.env
+**/.env.next.*
+**/.secrets/
 
-# ACME 证书文件
-acme/acme.json
-acme/*.json
+# Traefik 运行时证书状态
+infrastructure/traefik/state/acme/*
+!infrastructure/traefik/state/acme/.gitkeep
 
-# 动态配置文件（可选）
-dynamic/*.yml
-dynamic/*.yaml
-!dynamic/.gitkeep
+# 运维脚本的主机级部署锁
+.ops.lock
 
-# 回滚 digest 文件（服务器生成）
+# 旧版本部署流程遗留文件；服务器迁移完成后可以删除
 .rollback_digest_*
