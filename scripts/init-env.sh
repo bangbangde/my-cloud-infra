@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 
-# jq expressions intentionally reference variables supplied through jq --arg.
-# shellcheck disable=SC2016
-
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -73,17 +70,79 @@ read_expected_keys() {
   sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$example"
 }
 
-jq_for_file() {
-  local expression=$1
-  local relative_file=$2
-  jq -r --arg file "$relative_file" "$expression" "$CONFIG_FILE" | tr -d '\r'
-}
+json_query() {
+  local query_type=$1
+  local config_file=$2
+  shift 2
+  python3 - "$config_file" "$query_type" "$@" <<'PYTHON' | tr -d '\r'
+import json
+import sys
+import base64
 
-jq_for_value() {
-  local expression=$1
-  local relative_file=$2
-  local key=$3
-  jq -r --arg file "$relative_file" --arg key "$key" "$expression" "$CONFIG_FILE" | tr -d '\r'
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
+    data = json.load(f)
+
+query_type = sys.argv[2]
+
+if query_type == 'get_version':
+    print(data.get('version', ''))
+elif query_type == 'get_files_type':
+    print(type(data.get('files')).__name__)
+elif query_type == 'get_files_keys':
+    files = data.get('files', {})
+    for k in files.keys():
+        print(k)
+elif query_type == 'get_file_type':
+    file_path = sys.argv[3]
+    obj = data.get('files', {}).get(file_path)
+    print(type(obj).__name__ if obj is not None else 'null')
+elif query_type == 'get_file_keys':
+    file_path = sys.argv[3]
+    obj = data.get('files', {}).get(file_path, {})
+    for k in obj.keys():
+        print(k)
+elif query_type == 'get_value_type':
+    file_path = sys.argv[3]
+    key = sys.argv[4]
+    obj = data.get('files', {}).get(file_path, {}).get(key)
+    print(type(obj).__name__ if obj is not None else 'null')
+elif query_type == 'has_linebreak':
+    file_path = sys.argv[3]
+    key = sys.argv[4]
+    value = data.get('files', {}).get(file_path, {}).get(key, '')
+    has_newline = '\n' in str(value) or '\r' in str(value)
+    print('true' if has_newline else 'false')
+elif query_type == 'get_traefik_type':
+    traefik = data.get('traefik')
+    print(type(traefik).__name__ if traefik is not None else 'null')
+elif query_type == 'get_domains_type':
+    domains = data.get('traefik', {}).get('domains')
+    print(type(domains).__name__ if domains is not None else 'null')
+elif query_type == 'get_domains_length':
+    domains = data.get('traefik', {}).get('domains', [])
+    print(len(domains))
+elif query_type == 'all_domains_are_strings':
+    domains = data.get('traefik', {}).get('domains', [])
+    all_strings = all(isinstance(d, str) for d in domains)
+    print('true' if all_strings else 'false')
+elif query_type == 'get_domains':
+    domains = data.get('traefik', {}).get('domains', [])
+    for d in domains:
+        print(d)
+elif query_type == 'get_value':
+    file_path = sys.argv[3]
+    key = sys.argv[4]
+    value = data.get('files', {}).get(file_path, {}).get(key, '')
+    print(value)
+elif query_type == 'get_value_base64':
+    file_path = sys.argv[3]
+    key = sys.argv[4]
+    value = data.get('files', {}).get(file_path, {}).get(key, '')
+    encoded = base64.b64encode(str(value).encode('utf-8')).decode('utf-8')
+    print(encoded)
+else:
+    sys.exit(1)
+PYTHON
 }
 
 validate_config_location() {
@@ -134,12 +193,12 @@ validate_config_shape() {
   local -a configured_keys=()
   local -a expected_keys=()
 
-  jq -e '.version == 2' "$CONFIG_FILE" >/dev/null \
+  [[ "$(json_query get_version "$CONFIG_FILE")" == "2" ]] \
     || die "Configuration version must be 2."
-  jq -e '(.files | type) == "object"' "$CONFIG_FILE" >/dev/null \
+  [[ "$(json_query get_files_type "$CONFIG_FILE")" == "dict" ]] \
     || die "Configuration must contain a files mapping."
 
-  mapfile -t configured_files < <(jq -r '.files | keys[]' "$CONFIG_FILE" | tr -d '\r')
+  mapfile -t configured_files < <(json_query get_files_keys "$CONFIG_FILE")
   [[ "${#configured_files[@]}" -gt 0 ]] || die "Configuration files mapping must not be empty."
 
   for configured_file in "${configured_files[@]}"; do
@@ -151,12 +210,12 @@ validate_config_shape() {
     relative=${TARGET_FILES[$index]}
     example=${EXAMPLE_FILES[$index]}
 
-    node_type="$(jq_for_file '.files[$file] | type' "$relative")"
-    [[ "$node_type" == object ]] \
+    node_type="$(json_query get_file_type "$CONFIG_FILE" "$relative")"
+    [[ "$node_type" == dict ]] \
       || die "Configuration must define a key-value mapping for $relative"
 
     mapfile -t expected_keys < <(read_expected_keys "$example")
-    mapfile -t configured_keys < <(jq_for_file '.files[$file] | keys[]' "$relative")
+    mapfile -t configured_keys < <(json_query get_file_keys "$CONFIG_FILE" "$relative")
     [[ "${#expected_keys[@]}" -gt 0 ]] || die "Template has no environment keys: ${example#"$ROOT_DIR"/}"
 
     expected_signature="$(printf '%s\n' "${expected_keys[@]}" | LC_ALL=C sort)"
@@ -166,11 +225,11 @@ validate_config_shape() {
     fi
 
     for key in "${expected_keys[@]}"; do
-      node_type="$(jq_for_value '.files[$file][$key] | type' "$relative" "$key")"
-      [[ "$node_type" == string ]] \
+      node_type="$(json_query get_value_type "$CONFIG_FILE" "$relative" "$key")"
+      [[ "$node_type" == str ]] \
         || die "$relative:$key must be a JSON string."
 
-      linebreak="$(jq_for_value '.files[$file][$key] | (contains("\n") or contains("\r"))' "$relative" "$key")"
+      linebreak="$(json_query has_linebreak "$CONFIG_FILE" "$relative" "$key")"
       [[ "$linebreak" == false ]] \
         || die "$relative:$key must be a single-line value."
     done
@@ -186,15 +245,15 @@ validate_traefik_domains() {
 
   contains_target "$TRAEFIK_RUNTIME_TARGET" \
     || die "Missing tracked template for $TRAEFIK_RUNTIME_TARGET"
-  jq -e '(.traefik | type) == "object" and (.traefik.domains | type) == "array"' "$CONFIG_FILE" >/dev/null \
+  [[ "$(json_query get_traefik_type "$CONFIG_FILE")" == "dict" && "$(json_query get_domains_type "$CONFIG_FILE")" == "list" ]] \
     || die "Configuration must contain a traefik.domains array."
 
-  domain_count="$(jq -r '.traefik.domains | length' "$CONFIG_FILE" | tr -d '\r')"
+  domain_count="$(json_query get_domains_length "$CONFIG_FILE")"
   [[ "$domain_count" -gt 0 ]] || die "traefik.domains must not be empty."
-  jq -e 'all(.traefik.domains[]; type == "string")' "$CONFIG_FILE" >/dev/null \
+  [[ "$(json_query all_domains_are_strings "$CONFIG_FILE")" == "true" ]] \
     || die "Every traefik.domains entry must be a JSON string."
 
-  mapfile -t domains < <(jq -r '.traefik.domains[]' "$CONFIG_FILE" | tr -d '\r')
+  mapfile -t domains < <(json_query get_domains "$CONFIG_FILE")
   unique_domain_count="$(printf '%s\n' "${domains[@]}" | LC_ALL=C sort -u | wc -l | tr -d '[:space:]')"
   [[ "$unique_domain_count" -eq "$domain_count" ]] \
     || die "traefik.domains must not contain duplicates."
@@ -204,7 +263,7 @@ validate_traefik_domains() {
       || die "Invalid domain in traefik.domains: $domain"
   done
 
-  dashboard_domain="$(jq_for_value '.files[$file][$key]' 'infrastructure/traefik/.env' 'DOMAIN_NAME')"
+  dashboard_domain="$(json_query get_value "$CONFIG_FILE" 'infrastructure/traefik/.env' 'DOMAIN_NAME')"
   printf '%s\n' "${domains[@]}" | grep -Fx -- "$dashboard_domain" >/dev/null \
     || die "infrastructure/traefik/.env:DOMAIN_NAME must also appear in traefik.domains."
 }
@@ -217,7 +276,7 @@ append_traefik_domains() {
     printf "TRAEFIK_ENTRYPOINTS_WEBSECURE_HTTP_TLS_DOMAINS_%s_MAIN='%s'\n" "$index" "$domain"
     printf "TRAEFIK_ENTRYPOINTS_WEBSECURE_HTTP_TLS_DOMAINS_%s_SANS='*.%s'\n" "$index" "$domain"
     index=$((index + 1))
-  done < <(jq -r '.traefik.domains[]' "$CONFIG_FILE" | tr -d '\r')
+  done < <(json_query get_domains "$CONFIG_FILE")
 }
 
 stage_files() {
@@ -243,7 +302,7 @@ stage_files() {
 
     mapfile -t expected_keys < <(read_expected_keys "$example")
     for key in "${expected_keys[@]}"; do
-      encoded="$(jq_for_value '.files[$file][$key] | @base64' "$relative" "$key")"
+      encoded="$(json_query get_value_base64 "$CONFIG_FILE" "$relative" "$key")"
       value="$(printf '%s' "$encoded" | base64 --decode)"
       escaped=${value//\'/\\\'}
       printf "%s='%s'\n" "$key" "$escaped" >>"$staged"
@@ -298,20 +357,7 @@ main() {
   require_command find
   require_command git
   require_command install
-  require_command jq
-
-  local jq_version
-  local jq_major
-  local jq_minor
-  local jq_patch
-  jq_version="$(jq --version 2>&1 || true)"
-  [[ "$jq_version" =~ ^jq-([0-9]+)\.([0-9]+)(\.([0-9]+))? ]] \
-    || die "jq 1.7.1 or newer is required; found: ${jq_version:-unknown version}"
-  jq_major=${BASH_REMATCH[1]}
-  jq_minor=${BASH_REMATCH[2]}
-  jq_patch=${BASH_REMATCH[4]:-0}
-  ((jq_major > 1 || (jq_major == 1 && (jq_minor > 7 || (jq_minor == 7 && jq_patch >= 1))))) \
-    || die "jq 1.7.1 or newer is required; found: $jq_version"
+  require_command python3
 
   umask 077
   validate_config_location

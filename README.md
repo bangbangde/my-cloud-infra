@@ -87,7 +87,7 @@ Traefik 的 `.env` 包含 Dashboard 所用根域名、ACME 邮箱和认证信息
 - Docker Compose 2.24+
 - Bash
 - `flock`（通常由 `util-linux` 提供）
-- [`jq` 1.7.1+](https://jqlang.org/download/)（仅首次 JSON 初始化需要，可使用官方单文件二进制）
+- `python3`（仅首次 JSON 初始化需要）
 - 已解析到服务器的域名
 - 腾讯云 DNS API 凭据
 
