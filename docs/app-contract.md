@@ -58,6 +58,8 @@ IMAGE_TAG=sha-REPLACE_ME
 
 模板只使用保留的示例域名和通用镜像命名空间。部署环境的真实值写入同目录 `.env`，不得提交。`scripts/ops.sh deploy` 仅替换其中唯一的 `IMAGE_TAG`，其余配置保持不变。
 
+首次服务器初始化时，在忽略的 `config/env.yml` 中为该目标文件增加同名键。`bash scripts/ops.sh init-env config/env.yml` 会要求 YAML 目标路径与仓库内模板一一对应，并要求变量名完全一致；它只创建缺失文件，不覆盖现有环境文件。
+
 ## 应用运行时变量
 
 需要运行时变量时，在 Compose 中声明：
@@ -114,7 +116,7 @@ volumes:
 
 1. 创建 `apps/<id>/compose.yaml`。
 2. 创建包含 `IMAGE_REPOSITORY`、`APP_DOMAIN` 和 `IMAGE_TAG` 的 `.env.example`，只填写示例值。
-3. 在服务器从模板创建 `.env`，填写真实镜像仓库和域名。
+3. 在服务器的 `config/env.yml` 中增加对应目标路径和真实值，运行 `bash scripts/ops.sh init-env config/env.yml`。
 4. 执行 `bash scripts/validate.sh`。
 5. 在应用仓库构建不可变标签镜像。
 6. 配置带有 `service` 和 `image_tag` 的 repository dispatch。

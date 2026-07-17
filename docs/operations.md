@@ -22,10 +22,11 @@ docker compose logs -f traefik
 应用：
 
 ```bash
-cd ~/my-cloud-infra/apps/my-pages
+APP_ID=your-app-id
+cd ~/my-cloud-infra/apps/"$APP_ID"
 docker compose config
 docker compose ps
-docker compose logs -f my-pages
+docker compose logs -f "$APP_ID"
 ```
 
 因为 Compose 文件与 `.env` 位于同一目录，这些命令不会读取其他栈的环境文件。自动化脚本仍会显式传入 `--project-directory` 和 `--env-file`。
@@ -34,18 +35,34 @@ docker compose logs -f my-pages
 
 这次迁移会改变 Compose 项目名并移除 `container_name`。旧容器和旧 `traefik-net` 不能与新栈直接并存，首次切换需要短暂停机。
 
+### 1. 盘点并记录旧资源
+
 在操作前：
 
 1. 暂停可能触发 `repository_dispatch` 的应用发布。
 2. 确认可以通过云厂商控制台或现有 SSH 会话访问服务器。
-3. 记录当前应用镜像标签。
-4. 检查旧 `dynamic/` 是否存在 `.gitkeep` 之外的文件；如果存在，先把有效配置迁入 `infrastructure/traefik/dynamic/` 并提交到仓库，再开始切换。
+3. 记录当前应用镜像标签、Compose 项目、容器、网络和数据卷。
+4. 确认所有持久化数据已有可恢复的备份。
+5. 检查旧 `dynamic/` 是否存在 `.gitkeep` 之外的文件；如果存在，先把有效配置迁入 `infrastructure/traefik/dynamic/` 并提交到仓库，再开始切换。
 
 ```bash
-docker inspect my-pages --format '{{.Config.Image}}'
-docker inspect codebuff-next --format '{{.Config.Image}}'
+docker compose ls
+docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Labels}}'
+docker network ls
+docker volume ls
+docker system df -v
+
+# 把数组内容替换为实际的旧应用容器名
+OLD_APP_CONTAINERS=(app-a app-b)
+for container in "${OLD_APP_CONTAINERS[@]}"; do
+  docker inspect "$container" --format '{{.Name}} {{.Config.Image}}'
+done
 docker inspect traefik --format '{{.Config.Image}}'
 ```
+
+不要仅凭名称猜测资源归属。Compose 创建的容器、网络和数据卷通常带有 `com.docker.compose.project` 标签，可结合 `docker inspect <资源名>` 确认。
+
+### 2. 拉取新布局并初始化环境文件
 
 拉取新布局：
 
@@ -54,21 +71,16 @@ cd ~/my-cloud-infra
 git pull --ff-only origin main
 ```
 
-旧根目录 `.env` 是未跟踪文件，Git 不会删除它。根据旧 `.env` 手动创建新文件：
+旧根目录 `.env` 是未跟踪文件，Git 不会删除它。复制引导配置，把旧值迁移到 YAML，并为 `apps/` 下每个实际目录增加目标文件映射：
 
 ```bash
-cp infrastructure/traefik/.env.example infrastructure/traefik/.env
-cp infrastructure/traefik/runtime.env.example infrastructure/traefik/runtime.env
-cp apps/my-pages/.env.example apps/my-pages/.env
-cp apps/codebuff-next/.env.example apps/codebuff-next/.env
-
-vim infrastructure/traefik/.env
-vim infrastructure/traefik/runtime.env
-vim apps/my-pages/.env
-vim apps/codebuff-next/.env
+cp config/env.example.yml config/env.yml
+chmod 600 config/env.yml
+${EDITOR:-vi} config/env.yml
+bash scripts/ops.sh init-env config/env.yml
 ```
 
-两个应用 `.env` 中的 `IMAGE_REPOSITORY` 和 `APP_DOMAIN` 必须在恢复 `repository_dispatch` 自动部署前配置完成；`ops.sh` 不再从公开仓库推断这些值。
+所有应用 `.env` 中的 `IMAGE_REPOSITORY`、`APP_DOMAIN` 和初始 `IMAGE_TAG` 都必须在恢复 `repository_dispatch` 自动部署前配置完成；`ops.sh` 不再从公开仓库推断这些值。已有目标环境文件会被初始化脚本跳过而不会覆盖。
 
 保留现有 ACME 账户和证书状态，避免切换时重新申请证书：
 
@@ -95,25 +107,52 @@ fi
 
 旧文档可能把 `DASHBOARD_USERS` 中的 `$` 保存成 `$$`。新布局通过 `.env` 变量整体注入 Label，应重新执行 `htpasswd -nB admin`，在 `.env` 中用单引号包裹结果并保留原始单个 `$`。
 
+### 3. 验证配置并清理旧 Docker 资源
+
 先验证配置：
 
 ```bash
 bash scripts/ops.sh validate
 ```
 
-进入受控停机窗口后，清理旧容器和旧项目网络：
+进入受控停机窗口后，优先使用旧 Compose 项目的原始 Compose 文件停止并删除它管理的容器和项目网络：
 
 ```bash
-docker rm -f my-pages codebuff-next traefik
+cd <旧 Compose 项目目录>
+docker compose down --remove-orphans
+```
+
+这里不要加 `-v`。如果旧 Compose 文件已经不可用，则回到仓库目录，根据第 1 步确认的清单定向删除旧容器；数组中还应加入盘点到的其他旧项目容器：
+
+```bash
+cd ~/my-cloud-infra
+OLD_APP_CONTAINERS=(app-a app-b)
+docker rm -f "${OLD_APP_CONTAINERS[@]}" traefik
+
+# 确认没有仍需保留的容器连接后，再删除旧 external 网络
+docker network inspect traefik-net
 docker network rm traefik-net
 ```
+
+数据卷与持久化业务数据分开处理：
+
+```bash
+docker volume inspect <待确认的数据卷>
+
+# 只有在确认备份可恢复且该卷确实废弃后，才按名字删除
+docker volume rm <已确认废弃的数据卷>
+```
+
+迁移中不要运行 `docker volume prune` 或 `docker system prune -a --volumes`。这些命令作用于整台 Docker 主机，而不是当前仓库，可能删除其他项目暂时未挂载的数据。镜像清理也应放到新栈验证完成之后；`docker image prune` 默认只清理悬空镜像，执行前仍应阅读 Docker 给出的清单并确认。
+
+### 4. 启动并验证新栈
 
 然后按顺序启动新栈：
 
 ```bash
 bash scripts/ops.sh deploy traefik
-bash scripts/ops.sh deploy my-pages <已记录的标签>
-bash scripts/ops.sh deploy codebuff-next <已记录的标签>
+bash scripts/ops.sh deploy <app-id> <已记录的标签>
+# 对 apps/ 下的每个应用重复上一条命令
 ```
 
 验证：
@@ -121,11 +160,11 @@ bash scripts/ops.sh deploy codebuff-next <已记录的标签>
 ```bash
 bash scripts/ops.sh status
 curl -fsS https://traefik.<你的域名>/
-curl -fsS https://<my-pages 的 APP_DOMAIN>/
-curl -fsS https://<codebuff-next 的 APP_DOMAIN>/
+curl -fsS https://<应用的 APP_DOMAIN>/
+docker system df
 ```
 
-全部正常后可以删除旧的根 `.env` 和 `.rollback_digest_*` 文件。
+全部正常后，可以删除旧的根 `.env`、`.rollback_digest_*` 和不再需要的 `config/env.yml`。如果要保留引导 YAML，必须把它当作密钥文件存放在受保护的备份中，不能提交到 Git。
 
 ## 部署失败和旧版本重新部署
 
@@ -136,7 +175,7 @@ curl -fsS https://<codebuff-next 的 APP_DOMAIN>/
 需要手动回退时，从应用构建记录、GHCR 或历史 Action 日志找到旧标签：
 
 ```bash
-bash scripts/ops.sh deploy my-pages sha-previous
+bash scripts/ops.sh deploy <app-id> sha-previous
 ```
 
 不再使用独立 Rollback Action 或 `.rollback_digest_*` 文件。

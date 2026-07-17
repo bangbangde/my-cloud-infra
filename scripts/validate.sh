@@ -80,7 +80,7 @@ docker compose version >/dev/null 2>&1 || die "Docker Compose is required."
 
 tracked_sensitive_files="$(
   git -C "$ROOT_DIR" ls-files \
-    | grep -E '(^|/)(\.env|runtime\.env|[^/]+\.runtime\.env|acme\.json)$' \
+    | grep -E '(^|/)(\.env|runtime\.env|[^/]+\.runtime\.env|acme\.json|config/env\.yml)$' \
     || true
 )"
 [[ -z "$tracked_sensitive_files" ]] \
@@ -90,6 +90,8 @@ printf '==> Validate shell syntax\n'
 for script in "$ROOT_DIR"/scripts/*.sh; do
   bash -n "$script"
 done
+
+require_file "$ROOT_DIR/config/env.example.yml"
 
 printf '==> Validate Traefik Compose model\n'
 for file in compose.yaml .env.example runtime.env.example static.yaml dynamic/tls.yaml; do

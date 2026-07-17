@@ -5,6 +5,9 @@
 **/.env.next.*
 **/.secrets/
 
+# 首次初始化使用的真实值清单；示例文件 config/env.example.yml 仍然跟踪
+config/env.yml
+
 # Traefik 运行时证书状态
 infrastructure/traefik/state/acme/*
 !infrastructure/traefik/state/acme/.gitkeep

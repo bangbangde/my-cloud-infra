@@ -13,6 +13,7 @@ REGISTRY_LOGGED_IN=false
 usage() {
   cat <<'EOF'
 Usage:
+  bash scripts/ops.sh init-env <config-yml>
   bash scripts/ops.sh deploy traefik
   bash scripts/ops.sh deploy <app> <image-tag>
   bash scripts/ops.sh status [target]
@@ -48,6 +49,11 @@ trap cleanup EXIT
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+require_docker_compose() {
+  require_command docker
+  docker compose version >/dev/null 2>&1 || die "Docker Compose is unavailable."
 }
 
 acquire_lock() {
@@ -271,12 +277,14 @@ restart_target() {
 }
 
 main() {
-  require_command docker
-  docker compose version >/dev/null 2>&1 || die "Docker Compose is unavailable."
-
   local command=${1:-help}
   case "$command" in
+    init-env)
+      [[ $# -eq 2 ]] || die "init-env requires exactly one YAML configuration file."
+      bash "$ROOT_DIR/scripts/init-env.sh" "$2"
+      ;;
     deploy)
+      require_docker_compose
       local target=${2:-}
       [[ -n "$target" ]] || die "A deployment target is required."
       if [[ "$target" == "traefik" ]]; then
@@ -288,6 +296,7 @@ main() {
       fi
       ;;
     status)
+      require_docker_compose
       if [[ $# -eq 1 ]]; then
         docker compose ls
       else
@@ -296,10 +305,12 @@ main() {
       fi
       ;;
     logs)
+      require_docker_compose
       [[ $# -eq 2 ]] || die "logs requires exactly one target."
       logs_target "$2"
       ;;
     restart)
+      require_docker_compose
       [[ $# -eq 2 ]] || die "restart requires exactly one target."
       restart_target "$2"
       ;;
