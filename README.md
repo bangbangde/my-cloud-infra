@@ -31,7 +31,7 @@ my-cloud-infra/
 │       ├── compose.yaml
 │       └── .env.example
 ├── config/
-│   └── env.example.yml
+│   └── env.example.json
 ├── scripts/
 │   ├── init-env.sh
 │   ├── ops.sh
@@ -61,20 +61,22 @@ my-cloud-infra/
 
 ### 首次初始化
 
-首次拉取仓库后，使用一份本机 YAML 同时生成基础设施和所有应用的环境文件：
+首次拉取仓库后，使用一份本机 JSON 同时生成基础设施和所有应用的环境文件：
 
 ```bash
-cp config/env.example.yml config/env.yml
-chmod 600 config/env.yml
-${EDITOR:-vi} config/env.yml
-bash scripts/ops.sh init-env config/env.yml
+cp config/env.example.json config/env.json
+chmod 600 config/env.json
+${EDITOR:-vi} config/env.json
+bash scripts/ops.sh init-env config/env.json
 ```
 
-`config/env.yml` 已被 Git 忽略。把示例中的 `apps/<app-id>/.env` 替换或复制为 `apps/` 下的每个实际目录；如果某个栈还有 `runtime.env.example` 或 `<service>.runtime.env.example`，也要加入对应的目标文件。YAML 中的目标文件和变量名必须与仓库模板完全一致，所有值必须解析为字符串；建议统一加引号，尤其是布尔值外观和纯数字值。
+`config/env.json` 已被 Git 忽略。把示例中的 `apps/<app-id>/.env` 替换或复制为 `apps/` 下的每个实际目录；如果某个栈还有 `runtime.env.example` 或 `<service>.runtime.env.example`，也要加入对应的目标文件。JSON 中的目标文件和变量名必须与仓库模板完全一致，所有环境变量值都必须是字符串。JSON 不支持注释，实际说明保留在本节和示例文件旁的公开文档中，避免把说明文字与密钥混在同一份文件。
 
-脚本会先校验整份 YAML，再以 `0600` 权限创建缺失文件。已有文件只会报告 `SKIP`，不会被覆盖，因此也可以在以后新增应用时再次运行。初始化完成后，`config/env.yml` 只是敏感的引导输入；应删除它或存放在受保护的备份中，实际运维仍以各栈同目录的环境文件为准。
+脚本会先校验整份 JSON，再以 `0600` 权限创建缺失文件。已有文件只会报告 `SKIP`，不会被覆盖，因此也可以在以后新增应用时再次运行。初始化完成后，`config/env.json` 只是敏感的引导输入；应删除它或存放在受保护的备份中，实际运维仍以各栈同目录的环境文件为准。
 
-Traefik 的 `.env` 包含域名、ACME 邮箱和 Dashboard 认证信息，`runtime.env` 包含腾讯云 DNS API 凭据。Dashboard bcrypt 值使用 `htpasswd -nB admin` 生成；在 YAML 中保留原始单个 `$`，不要执行旧版文档中的美元符号双写转换。
+如果服务器曾创建旧的 `config/env.yml`，Git 不会迁移这个被忽略的本机文件。已经生成的各栈 `.env` 不受影响；只有再次初始化时才需要把真实值转入 `config/env.json`，确认后删除旧 YAML，避免留下两份密钥清单。
+
+Traefik 的 `.env` 包含域名、ACME 邮箱和 Dashboard 认证信息，`runtime.env` 包含腾讯云 DNS API 凭据。Dashboard bcrypt 值使用 `htpasswd -nB admin` 生成；在 JSON 字符串中保留原始单个 `$`，不要执行旧版文档中的美元符号双写转换。
 
 每个应用的 `.env` 至少包含 `IMAGE_REPOSITORY`、`APP_DOMAIN` 和 `IMAGE_TAG`。`scripts/ops.sh deploy` 只更新 `IMAGE_TAG`，不会覆盖其他环境级配置；实际域名和镜像命名空间不进入公开仓库。
 
@@ -85,7 +87,7 @@ Traefik 的 `.env` 包含域名、ACME 邮箱和 Dashboard 认证信息，`runti
 - Docker Compose 2.24+
 - Bash
 - `flock`（通常由 `util-linux` 提供）
-- [`mikefarah/yq` 4.x](https://github.com/mikefarah/yq#install)（仅首次 YAML 初始化需要，可使用官方单文件二进制）
+- [`jq` 1.7.1+](https://jqlang.org/download/)（仅首次 JSON 初始化需要，可使用官方单文件二进制）
 - 已解析到服务器的域名
 - 腾讯云 DNS API 凭据
 
@@ -95,8 +97,8 @@ Traefik 的 `.env` 包含域名、ACME 邮箱和 Dashboard 认证信息，`runti
 # 验证全部配置
 bash scripts/ops.sh validate
 
-# 从受保护的 YAML 创建缺失环境文件
-bash scripts/ops.sh init-env config/env.yml
+# 从受保护的 JSON 创建缺失环境文件
+bash scripts/ops.sh init-env config/env.json
 
 # 部署 Traefik
 bash scripts/ops.sh deploy traefik
@@ -114,6 +116,14 @@ bash scripts/ops.sh restart <app-id>
 ```
 
 如需回退，使用同一个 Deploy 入口重新部署之前的不可变镜像标签，不再维护独立 Rollback 工作流。
+
+## 多域名
+
+一套 Traefik 可以同时服务多个互不相关的根域名。每个应用目录拥有自己的 `APP_DOMAIN`，因此不同应用可以分别使用 `app.example.com`、`service.example.net` 等域名；它们不要求与 Traefik `.env` 中的 `DOMAIN_NAME` 相同。应用 Router 已配置 `tls.certresolver=letsencrypt`，Traefik 会从各自的 `Host(...)` 规则提取域名并申请证书。
+
+当前应用契约默认一应用一个 `APP_DOMAIN`。如果同一个应用需要多个入口域名，保留 `APP_DOMAIN` 作为主域名，在该应用的 `.env.example` 中增加 `APP_ALT_DOMAIN` 等明确变量，并把 Router 规则写成 ``Host(`${APP_DOMAIN}`) || Host(`${APP_ALT_DOMAIN}`)``；Traefik 会把多个 Host 合并到同一张证书的主域名和 SAN 中。不要把逗号分隔域名直接塞入 `APP_DOMAIN`，因为它不是 Traefik Router 规则。
+
+腾讯云 DNS 凭据必须有权为涉及的每个 DNS Zone 完成 DNS-01 验证，所有域名也必须正确解析到当前服务器。`DOMAIN_NAME` 仍只用于默认根域、通配符证书和 Dashboard 的 `traefik.<DOMAIN_NAME>` 地址，不是全局域名白名单。
 
 ## 网络模型
 

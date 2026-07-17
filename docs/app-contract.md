@@ -58,7 +58,25 @@ IMAGE_TAG=sha-REPLACE_ME
 
 模板只使用保留的示例域名和通用镜像命名空间。部署环境的真实值写入同目录 `.env`，不得提交。`scripts/ops.sh deploy` 仅替换其中唯一的 `IMAGE_TAG`，其余配置保持不变。
 
-首次服务器初始化时，在忽略的 `config/env.yml` 中为该目标文件增加同名键。`bash scripts/ops.sh init-env config/env.yml` 会要求 YAML 目标路径与仓库内模板一一对应，并要求变量名完全一致；它只创建缺失文件，不覆盖现有环境文件。
+首次服务器初始化时，在忽略的 `config/env.json` 中为该目标文件增加同名键。`bash scripts/ops.sh init-env config/env.json` 会要求 JSON 目标路径与仓库内模板一一对应，并要求变量名完全一致；它只创建缺失文件，不覆盖现有环境文件。
+
+## 多域名
+
+不同应用的 `APP_DOMAIN` 可以属于不同根域，Traefik 会根据每个 Router 的 `Host(...)` 规则分别路由并申请证书。`infrastructure/traefik/.env` 中的 `DOMAIN_NAME` 不是应用域名白名单。
+
+同一个应用需要多个入口域名时，保留 `APP_DOMAIN` 作为主域名，并增加命名明确的附加变量：
+
+```dotenv
+APP_DOMAIN=my-app.example.com
+APP_ALT_DOMAIN=my-app.example.net
+```
+
+```yaml
+labels:
+  - "traefik.http.routers.my-app.rule=Host(`${APP_DOMAIN:?APP_DOMAIN is required}`) || Host(`${APP_ALT_DOMAIN:?APP_ALT_DOMAIN is required}`)"
+```
+
+对应 `.env.example` 和 `config/env.json` 必须同时增加 `APP_ALT_DOMAIN`。不要使用逗号分隔字符串冒充 Router 规则；需要更多域名时继续增加明确变量和 `Host(...)` 条件。
 
 ## 应用运行时变量
 
@@ -116,7 +134,7 @@ volumes:
 
 1. 创建 `apps/<id>/compose.yaml`。
 2. 创建包含 `IMAGE_REPOSITORY`、`APP_DOMAIN` 和 `IMAGE_TAG` 的 `.env.example`，只填写示例值。
-3. 在服务器的 `config/env.yml` 中增加对应目标路径和真实值，运行 `bash scripts/ops.sh init-env config/env.yml`。
+3. 在服务器的 `config/env.json` 中增加对应目标路径和真实值，运行 `bash scripts/ops.sh init-env config/env.json`。
 4. 执行 `bash scripts/validate.sh`。
 5. 在应用仓库构建不可变标签镜像。
 6. 配置带有 `service` 和 `image_tag` 的 repository dispatch。

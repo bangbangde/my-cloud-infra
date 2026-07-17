@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# jq expressions intentionally reference variables supplied through jq --arg.
+# shellcheck disable=SC2016
+
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,9 +18,9 @@ STAGED_FILES=()
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/init-env.sh <config-yml>
+  bash scripts/init-env.sh <config-json>
 
-Creates missing environment files declared in the YAML configuration.
+Creates missing environment files declared in the JSON configuration.
 Existing files are left unchanged.
 EOF
 }
@@ -69,17 +72,17 @@ read_expected_keys() {
   sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$example"
 }
 
-yq_for_file() {
+jq_for_file() {
   local expression=$1
   local relative_file=$2
-  FILE_PATH="$relative_file" yq eval -r "$expression" "$CONFIG_FILE"
+  jq -r --arg file "$relative_file" "$expression" "$CONFIG_FILE" | tr -d '\r'
 }
 
-yq_for_value() {
+jq_for_value() {
   local expression=$1
   local relative_file=$2
   local key=$3
-  FILE_PATH="$relative_file" ENV_KEY="$key" yq eval -r "$expression" "$CONFIG_FILE"
+  jq -r --arg file "$relative_file" --arg key "$key" "$expression" "$CONFIG_FILE" | tr -d '\r'
 }
 
 validate_config_location() {
@@ -130,12 +133,12 @@ validate_config_shape() {
   local -a configured_keys=()
   local -a expected_keys=()
 
-  yq eval -e '.version == 1' "$CONFIG_FILE" >/dev/null \
+  jq -e '.version == 1' "$CONFIG_FILE" >/dev/null \
     || die "Configuration version must be 1."
-  yq eval -e '(.files | tag) == "!!map"' "$CONFIG_FILE" >/dev/null \
+  jq -e '(.files | type) == "object"' "$CONFIG_FILE" >/dev/null \
     || die "Configuration must contain a files mapping."
 
-  mapfile -t configured_files < <(yq eval -r '.files | keys | .[]' "$CONFIG_FILE")
+  mapfile -t configured_files < <(jq -r '.files | keys[]' "$CONFIG_FILE" | tr -d '\r')
   [[ "${#configured_files[@]}" -gt 0 ]] || die "Configuration files mapping must not be empty."
 
   for configured_file in "${configured_files[@]}"; do
@@ -147,12 +150,12 @@ validate_config_shape() {
     relative=${TARGET_FILES[$index]}
     example=${EXAMPLE_FILES[$index]}
 
-    node_type="$(yq_for_file '.files[strenv(FILE_PATH)] | tag' "$relative")"
-    [[ "$node_type" == '!!map' ]] \
+    node_type="$(jq_for_file '.files[$file] | type' "$relative")"
+    [[ "$node_type" == object ]] \
       || die "Configuration must define a key-value mapping for $relative"
 
     mapfile -t expected_keys < <(read_expected_keys "$example")
-    mapfile -t configured_keys < <(yq_for_file '.files[strenv(FILE_PATH)] | keys | .[]' "$relative")
+    mapfile -t configured_keys < <(jq_for_file '.files[$file] | keys[]' "$relative")
     [[ "${#expected_keys[@]}" -gt 0 ]] || die "Template has no environment keys: ${example#"$ROOT_DIR"/}"
 
     expected_signature="$(printf '%s\n' "${expected_keys[@]}" | LC_ALL=C sort)"
@@ -162,11 +165,11 @@ validate_config_shape() {
     fi
 
     for key in "${expected_keys[@]}"; do
-      node_type="$(yq_for_value '.files[strenv(FILE_PATH)][strenv(ENV_KEY)] | tag' "$relative" "$key")"
-      [[ "$node_type" == '!!str' ]] \
-        || die "$relative:$key must be a YAML string; quote boolean-like or numeric values."
+      node_type="$(jq_for_value '.files[$file][$key] | type' "$relative" "$key")"
+      [[ "$node_type" == string ]] \
+        || die "$relative:$key must be a JSON string."
 
-      linebreak="$(yq_for_value '.files[strenv(FILE_PATH)][strenv(ENV_KEY)] | (contains("\n") or contains("\r"))' "$relative" "$key")"
+      linebreak="$(jq_for_value '.files[$file][$key] | (contains("\n") or contains("\r"))' "$relative" "$key")"
       [[ "$linebreak" == false ]] \
         || die "$relative:$key must be a single-line value."
     done
@@ -196,7 +199,7 @@ stage_files() {
 
     mapfile -t expected_keys < <(read_expected_keys "$example")
     for key in "${expected_keys[@]}"; do
-      encoded="$(yq_for_value '.files[strenv(FILE_PATH)][strenv(ENV_KEY)] | @base64' "$relative" "$key")"
+      encoded="$(jq_for_value '.files[$file][$key] | @base64' "$relative" "$key")"
       value="$(printf '%s' "$encoded" | base64 --decode)"
       escaped=${value//\'/\\\'}
       printf "%s='%s'\n" "$key" "$escaped" >>"$staged"
@@ -247,12 +250,20 @@ main() {
   require_command find
   require_command git
   require_command install
-  require_command yq
+  require_command jq
 
-  local yq_version
-  yq_version="$(yq --version 2>&1 || true)"
-  [[ "$yq_version" =~ version[[:space:]]+v?4\. ]] \
-    || die "mikefarah/yq v4 is required; found: ${yq_version:-unknown version}"
+  local jq_version
+  local jq_major
+  local jq_minor
+  local jq_patch
+  jq_version="$(jq --version 2>&1 || true)"
+  [[ "$jq_version" =~ ^jq-([0-9]+)\.([0-9]+)(\.([0-9]+))? ]] \
+    || die "jq 1.7.1 or newer is required; found: ${jq_version:-unknown version}"
+  jq_major=${BASH_REMATCH[1]}
+  jq_minor=${BASH_REMATCH[2]}
+  jq_patch=${BASH_REMATCH[4]:-0}
+  ((jq_major > 1 || (jq_major == 1 && (jq_minor > 7 || (jq_minor == 7 && jq_patch >= 1))))) \
+    || die "jq 1.7.1 or newer is required; found: $jq_version"
 
   umask 077
   validate_config_location

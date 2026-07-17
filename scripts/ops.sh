@@ -13,7 +13,7 @@ REGISTRY_LOGGED_IN=false
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/ops.sh init-env <config-yml>
+  bash scripts/ops.sh init-env <config-json>
   bash scripts/ops.sh deploy traefik
   bash scripts/ops.sh deploy <app> <image-tag>
   bash scripts/ops.sh status [target]
@@ -280,7 +280,7 @@ main() {
   local command=${1:-help}
   case "$command" in
     init-env)
-      [[ $# -eq 2 ]] || die "init-env requires exactly one YAML configuration file."
+      [[ $# -eq 2 ]] || die "init-env requires exactly one JSON configuration file."
       bash "$ROOT_DIR/scripts/init-env.sh" "$2"
       ;;
     deploy)

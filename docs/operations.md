@@ -71,13 +71,13 @@ cd ~/my-cloud-infra
 git pull --ff-only origin main
 ```
 
-旧根目录 `.env` 是未跟踪文件，Git 不会删除它。复制引导配置，把旧值迁移到 YAML，并为 `apps/` 下每个实际目录增加目标文件映射：
+旧根目录 `.env` 是未跟踪文件，Git 不会删除它。复制引导配置，把旧值迁移到 JSON，并为 `apps/` 下每个实际目录增加目标文件映射：
 
 ```bash
-cp config/env.example.yml config/env.yml
-chmod 600 config/env.yml
-${EDITOR:-vi} config/env.yml
-bash scripts/ops.sh init-env config/env.yml
+cp config/env.example.json config/env.json
+chmod 600 config/env.json
+${EDITOR:-vi} config/env.json
+bash scripts/ops.sh init-env config/env.json
 ```
 
 所有应用 `.env` 中的 `IMAGE_REPOSITORY`、`APP_DOMAIN` 和初始 `IMAGE_TAG` 都必须在恢复 `repository_dispatch` 自动部署前配置完成；`ops.sh` 不再从公开仓库推断这些值。已有目标环境文件会被初始化脚本跳过而不会覆盖。
@@ -164,7 +164,7 @@ curl -fsS https://<应用的 APP_DOMAIN>/
 docker system df
 ```
 
-全部正常后，可以删除旧的根 `.env`、`.rollback_digest_*` 和不再需要的 `config/env.yml`。如果要保留引导 YAML，必须把它当作密钥文件存放在受保护的备份中，不能提交到 Git。
+全部正常后，可以删除旧的根 `.env`、`.rollback_digest_*` 和不再需要的 `config/env.json`。如果要保留引导 JSON，必须把它当作密钥文件存放在受保护的备份中，不能提交到 Git。
 
 ## 部署失败和旧版本重新部署
 
