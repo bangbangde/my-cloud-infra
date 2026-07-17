@@ -45,8 +45,6 @@ services:
     command:
       - "--configFile=/etc/traefik/static.yaml"
       - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
-      - "--entryPoints.websecure.http.tls.domains.main=${DOMAIN_NAME}"
-      - "--entryPoints.websecure.http.tls.domains.sans=*.${DOMAIN_NAME}"
     volumes:
       - ./static.yaml:/etc/traefik/static.yaml:ro
       - ./dynamic:/etc/traefik/dynamic:ro
@@ -78,7 +76,6 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.dashboard.rule=Host(`traefik.${DOMAIN_NAME}`)"
       - "traefik.http.routers.dashboard.entrypoints=websecure"
-      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
       - "traefik.http.routers.dashboard.service=api@internal"
       - "traefik.http.routers.dashboard.middlewares=dashboard-ratelimit,dashboard-auth,dashboard-headers"
       - "traefik.http.middlewares.dashboard-ratelimit.ratelimit.average=5"

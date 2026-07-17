@@ -80,6 +80,8 @@ ${EDITOR:-vi} config/env.json
 bash scripts/ops.sh init-env config/env.json
 ```
 
+把所有由腾讯云 DNS 托管、需要预申请根域和通配符证书的域名写入 `traefik.domains` 数组。`DOMAIN_NAME` 必须是数组中的一项；初始化脚本会把数组展开为 `infrastructure/traefik/runtime.env` 中的 Traefik 索引环境变量，无需手工维护编号。
+
 所有应用 `.env` 中的 `IMAGE_REPOSITORY`、`APP_DOMAIN` 和初始 `IMAGE_TAG` 都必须在恢复 `repository_dispatch` 自动部署前配置完成；`ops.sh` 不再从公开仓库推断这些值。已有目标环境文件会被初始化脚本跳过而不会覆盖。
 
 保留现有 ACME 账户和证书状态，避免切换时重新申请证书：
@@ -96,6 +98,7 @@ fi
 
 | 旧变量 | 新位置 |
 | --- | --- |
+| 需要预申请证书的根域名 | `config/env.json` 的 `traefik.domains` 数组；初始化后展开到 `infrastructure/traefik/runtime.env` |
 | `DOMAIN_NAME` | `infrastructure/traefik/.env` |
 | `ACME_EMAIL` | `infrastructure/traefik/.env` |
 | `DASHBOARD_USERS` | `infrastructure/traefik/.env` |

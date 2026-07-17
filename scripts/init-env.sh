@@ -8,6 +8,7 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 INFRASTRUCTURE_DIR="$ROOT_DIR/infrastructure"
 APPS_DIR="$ROOT_DIR/apps"
+TRAEFIK_RUNTIME_TARGET="infrastructure/traefik/runtime.env"
 
 CONFIG_FILE=""
 STAGING_DIR=""
@@ -133,8 +134,8 @@ validate_config_shape() {
   local -a configured_keys=()
   local -a expected_keys=()
 
-  jq -e '.version == 1' "$CONFIG_FILE" >/dev/null \
-    || die "Configuration version must be 1."
+  jq -e '.version == 2' "$CONFIG_FILE" >/dev/null \
+    || die "Configuration version must be 2."
   jq -e '(.files | type) == "object"' "$CONFIG_FILE" >/dev/null \
     || die "Configuration must contain a files mapping."
 
@@ -176,6 +177,49 @@ validate_config_shape() {
   done
 }
 
+validate_traefik_domains() {
+  local dashboard_domain
+  local domain
+  local domain_count
+  local unique_domain_count
+  local -a domains=()
+
+  contains_target "$TRAEFIK_RUNTIME_TARGET" \
+    || die "Missing tracked template for $TRAEFIK_RUNTIME_TARGET"
+  jq -e '(.traefik | type) == "object" and (.traefik.domains | type) == "array"' "$CONFIG_FILE" >/dev/null \
+    || die "Configuration must contain a traefik.domains array."
+
+  domain_count="$(jq -r '.traefik.domains | length' "$CONFIG_FILE" | tr -d '\r')"
+  [[ "$domain_count" -gt 0 ]] || die "traefik.domains must not be empty."
+  jq -e 'all(.traefik.domains[]; type == "string")' "$CONFIG_FILE" >/dev/null \
+    || die "Every traefik.domains entry must be a JSON string."
+
+  mapfile -t domains < <(jq -r '.traefik.domains[]' "$CONFIG_FILE" | tr -d '\r')
+  unique_domain_count="$(printf '%s\n' "${domains[@]}" | LC_ALL=C sort -u | wc -l | tr -d '[:space:]')"
+  [[ "$unique_domain_count" -eq "$domain_count" ]] \
+    || die "traefik.domains must not contain duplicates."
+
+  for domain in "${domains[@]}"; do
+    [[ "$domain" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]] \
+      || die "Invalid domain in traefik.domains: $domain"
+  done
+
+  dashboard_domain="$(jq_for_value '.files[$file][$key]' 'infrastructure/traefik/.env' 'DOMAIN_NAME')"
+  printf '%s\n' "${domains[@]}" | grep -Fx -- "$dashboard_domain" >/dev/null \
+    || die "infrastructure/traefik/.env:DOMAIN_NAME must also appear in traefik.domains."
+}
+
+append_traefik_domains() {
+  local domain
+  local index=0
+
+  while IFS= read -r domain; do
+    printf "TRAEFIK_ENTRYPOINTS_WEBSECURE_HTTP_TLS_DOMAINS_%s_MAIN='%s'\n" "$index" "$domain"
+    printf "TRAEFIK_ENTRYPOINTS_WEBSECURE_HTTP_TLS_DOMAINS_%s_SANS='*.%s'\n" "$index" "$domain"
+    index=$((index + 1))
+  done < <(jq -r '.traefik.domains[]' "$CONFIG_FILE" | tr -d '\r')
+}
+
 stage_files() {
   local encoded
   local escaped
@@ -204,6 +248,10 @@ stage_files() {
       escaped=${value//\'/\\\'}
       printf "%s='%s'\n" "$key" "$escaped" >>"$staged"
     done
+
+    if [[ "$relative" == "$TRAEFIK_RUNTIME_TARGET" ]]; then
+      append_traefik_domains >>"$staged"
+    fi
 
     chmod 600 "$staged"
     STAGED_FILES+=("$staged")
@@ -269,6 +317,7 @@ main() {
   validate_config_location
   discover_targets
   validate_config_shape
+  validate_traefik_domains
   stage_files
   install_missing_files
 }

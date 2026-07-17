@@ -62,6 +62,8 @@ IMAGE_TAG=sha-REPLACE_ME
 
 ## 多域名
 
+基础设施需要为多个根域预申请证书时，在服务器的 `config/env.json` 中填写 `traefik.domains` 字符串数组。初始化脚本会为每个根域生成一组 Traefik 索引环境变量，证书内容包含根域和对应的 `*.<根域>`；所有 DNS Zone 必须能由同一组腾讯云凭据管理。Traefik `.env` 中的 `DOMAIN_NAME` 必须出现在该数组中，并只用于 Dashboard 地址。
+
 不同应用的 `APP_DOMAIN` 可以属于不同根域，Traefik 会根据每个 Router 的 `Host(...)` 规则分别路由并申请证书。`infrastructure/traefik/.env` 中的 `DOMAIN_NAME` 不是应用域名白名单。
 
 同一个应用需要多个入口域名时，保留 `APP_DOMAIN` 作为主域名，并增加命名明确的附加变量：

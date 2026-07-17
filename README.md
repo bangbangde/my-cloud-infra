@@ -70,13 +70,13 @@ ${EDITOR:-vi} config/env.json
 bash scripts/ops.sh init-env config/env.json
 ```
 
-`config/env.json` 已被 Git 忽略。把示例中的 `apps/<app-id>/.env` 替换或复制为 `apps/` 下的每个实际目录；如果某个栈还有 `runtime.env.example` 或 `<service>.runtime.env.example`，也要加入对应的目标文件。JSON 中的目标文件和变量名必须与仓库模板完全一致，所有环境变量值都必须是字符串。JSON 不支持注释，实际说明保留在本节和示例文件旁的公开文档中，避免把说明文字与密钥混在同一份文件。
+`config/env.json` 已被 Git 忽略。把示例中的 `apps/<app-id>/.env` 替换或复制为 `apps/` 下的每个实际目录；如果某个栈还有 `runtime.env.example` 或 `<service>.runtime.env.example`，也要加入对应的目标文件。`files` 中的目标文件和变量名必须与仓库模板完全一致，环境变量值都必须是字符串。`traefik.domains` 是唯一的数组字段，填写所有需要自动申请根域和通配符证书的域名；`infrastructure/traefik/.env` 中的 `DOMAIN_NAME` 必须是该数组中的一项。JSON 不支持注释，实际说明保留在本节和示例文件旁的公开文档中，避免把说明文字与密钥混在同一份文件。
 
 脚本会先校验整份 JSON，再以 `0600` 权限创建缺失文件。已有文件只会报告 `SKIP`，不会被覆盖，因此也可以在以后新增应用时再次运行。初始化完成后，`config/env.json` 只是敏感的引导输入；应删除它或存放在受保护的备份中，实际运维仍以各栈同目录的环境文件为准。
 
 如果服务器曾创建旧的 `config/env.yml`，Git 不会迁移这个被忽略的本机文件。已经生成的各栈 `.env` 不受影响；只有再次初始化时才需要把真实值转入 `config/env.json`，确认后删除旧 YAML，避免留下两份密钥清单。
 
-Traefik 的 `.env` 包含域名、ACME 邮箱和 Dashboard 认证信息，`runtime.env` 包含腾讯云 DNS API 凭据。Dashboard bcrypt 值使用 `htpasswd -nB admin` 生成；在 JSON 字符串中保留原始单个 `$`，不要执行旧版文档中的美元符号双写转换。
+Traefik 的 `.env` 包含 Dashboard 所用根域名、ACME 邮箱和认证信息，`runtime.env` 包含腾讯云 DNS API 凭据，以及初始化脚本根据 `traefik.domains` 生成的 Traefik TLS 域名变量。Dashboard bcrypt 值使用 `htpasswd -nB admin` 生成；在 JSON 字符串中保留原始单个 `$`，不要执行旧版文档中的美元符号双写转换。
 
 每个应用的 `.env` 至少包含 `IMAGE_REPOSITORY`、`APP_DOMAIN` 和 `IMAGE_TAG`。`scripts/ops.sh deploy` 只更新 `IMAGE_TAG`，不会覆盖其他环境级配置；实际域名和镜像命名空间不进入公开仓库。
 
@@ -119,11 +119,24 @@ bash scripts/ops.sh restart <app-id>
 
 ## 多域名
 
-一套 Traefik 可以同时服务多个互不相关的根域名。每个应用目录拥有自己的 `APP_DOMAIN`，因此不同应用可以分别使用 `app.example.com`、`service.example.net` 等域名；它们不要求与 Traefik `.env` 中的 `DOMAIN_NAME` 相同。应用 Router 已配置 `tls.certresolver=letsencrypt`，Traefik 会从各自的 `Host(...)` 规则提取域名并申请证书。
+在初始化 JSON 中使用数组声明由腾讯云 DNS 托管的根域名：
+
+```json
+"traefik": {
+  "domains": [
+    "example.com",
+    "example.net"
+  ]
+}
+```
+
+初始化脚本会为每一项生成 Traefik 支持的索引环境变量，使证书解析器分别申请根域名和对应的通配符域名，例如 `example.com` 与 `*.example.com`。这些生成变量保存在忽略的 `infrastructure/traefik/runtime.env` 中，不需要手工展开数组。腾讯云凭据必须有权管理数组中每个域名所属的 DNS Zone。
+
+`DOMAIN_NAME` 必须选择数组中的一个根域名，仅用于 Dashboard 的 `traefik.<DOMAIN_NAME>` 地址。每个应用目录仍拥有自己的 `APP_DOMAIN`；应用 Router 会从 `Host(...)` 规则提取具体域名，且可直接复用相应的通配符证书。
 
 当前应用契约默认一应用一个 `APP_DOMAIN`。如果同一个应用需要多个入口域名，保留 `APP_DOMAIN` 作为主域名，在该应用的 `.env.example` 中增加 `APP_ALT_DOMAIN` 等明确变量，并把 Router 规则写成 ``Host(`${APP_DOMAIN}`) || Host(`${APP_ALT_DOMAIN}`)``；Traefik 会把多个 Host 合并到同一张证书的主域名和 SAN 中。不要把逗号分隔域名直接塞入 `APP_DOMAIN`，因为它不是 Traefik Router 规则。
 
-腾讯云 DNS 凭据必须有权为涉及的每个 DNS Zone 完成 DNS-01 验证，所有域名也必须正确解析到当前服务器。`DOMAIN_NAME` 仍只用于默认根域、通配符证书和 Dashboard 的 `traefik.<DOMAIN_NAME>` 地址，不是全局域名白名单。
+需要对外访问的具体域名必须正确解析到当前服务器；`traefik.domains` 只声明预申请证书的根域名，不是路由白名单。
 
 ## 网络模型
 
