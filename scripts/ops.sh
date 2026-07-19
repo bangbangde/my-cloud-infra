@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+INFRASTRUCTURE_DIR="$ROOT_DIR/infrastructure"
 TRAEFIK_DIR="$ROOT_DIR/infrastructure/traefik"
 APPS_DIR="$ROOT_DIR/apps"
 LOCK_FILE="$ROOT_DIR/.ops.lock"
@@ -15,13 +16,16 @@ usage() {
 Usage:
   bash scripts/ops.sh init-env <config-json>
   bash scripts/ops.sh deploy traefik
+  bash scripts/ops.sh deploy <infrastructure-service>
   bash scripts/ops.sh deploy <app> <image-tag>
   bash scripts/ops.sh status [target]
   bash scripts/ops.sh logs <target>
   bash scripts/ops.sh restart <target>
+  bash scripts/ops.sh backup postgres <existing-output-directory>
+  bash scripts/ops.sh check garage
   bash scripts/ops.sh validate
 
-Targets are "traefik" or a directory name under apps/.
+Targets are "traefik" or a directory name under infrastructure/ or apps/.
 EOF
 }
 
@@ -85,6 +89,19 @@ app_dir() {
   printf '%s\n' "$directory"
 }
 
+infrastructure_dir() {
+  local target=$1
+  local directory
+
+  validate_target_name "$target"
+  [[ "$target" != "traefik" ]] || die "Traefik uses its dedicated deployment path."
+
+  directory="$INFRASTRUCTURE_DIR/$target"
+  [[ -f "$directory/compose.yaml" ]] \
+    || die "Infrastructure service not found: infrastructure/$target/compose.yaml"
+  printf '%s\n' "$directory"
+}
+
 compose_with_env() {
   local directory=$1
   local env_file=$2
@@ -95,6 +112,23 @@ compose_with_env() {
     --env-file "$env_file" \
     -f "$directory/compose.yaml" \
     "$@"
+}
+
+read_env_value() {
+  local env_file=$1
+  local key=$2
+  local value
+  local -a lines=()
+
+  mapfile -t lines < <(grep -E "^${key}=" "$env_file" || true)
+  [[ "${#lines[@]}" -eq 1 ]] || die "$env_file must contain exactly one $key entry."
+
+  value=${lines[0]#*=}
+  if [[ "$value" == \'*\' || "$value" == \"*\" ]]; then
+    value=${value:1:${#value}-2}
+  fi
+  [[ -n "$value" ]] || die "$env_file must contain a non-empty $key value."
+  printf '%s\n' "$value"
 }
 
 require_stack_env() {
@@ -159,6 +193,59 @@ deploy_traefik() {
   compose_with_env "$TRAEFIK_DIR" "$TRAEFIK_DIR/.env" up -d --wait --wait-timeout 120 traefik
   report_health_contract "$TRAEFIK_DIR" "$TRAEFIK_DIR/.env" traefik
   printf 'Traefik deployment finished.\n'
+}
+
+deploy_infrastructure() {
+  local target=$1
+  local directory
+  local public_bucket
+  local public_bucket_max_objects
+  local public_bucket_max_size
+
+  directory="$(infrastructure_dir "$target")"
+  require_stack_env "$directory"
+  require_runtime_envs "$directory"
+
+  acquire_lock
+
+  if [[ "$target" == "garage" ]]; then
+    bash "$ROOT_DIR/scripts/garage-check.sh"
+  fi
+
+  printf '==> Validate infrastructure configuration: %s\n' "$target"
+  compose_with_env "$directory" "$directory/.env" config --quiet
+  compose_with_env "$directory" "$directory/.env" config --services | grep -Fx -- "$target" >/dev/null \
+    || die "Primary Compose service must be named $target."
+
+  printf '==> Pull infrastructure image: %s\n' "$target"
+  compose_with_env "$directory" "$directory/.env" pull "$target"
+
+  printf '==> Start infrastructure service: %s\n' "$target"
+  compose_with_env "$directory" "$directory/.env" up -d --wait --wait-timeout 120 "$target"
+  report_health_contract "$directory" "$directory/.env" "$target"
+
+  if [[ "$target" == "garage" ]]; then
+    public_bucket="$(read_env_value "$directory/.env" GARAGE_PUBLIC_BUCKET)"
+    public_bucket_max_size="$(read_env_value "$directory/.env" GARAGE_PUBLIC_BUCKET_MAX_SIZE)"
+    public_bucket_max_objects="$(read_env_value "$directory/.env" GARAGE_PUBLIC_BUCKET_MAX_OBJECTS)"
+    [[ "$public_bucket" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] \
+      || die "GARAGE_PUBLIC_BUCKET must be a DNS-compatible S3 bucket name."
+    [[ "$public_bucket_max_size" =~ ^[1-9][0-9]*(KiB|MiB|GiB|TiB)$ ]] \
+      || die "GARAGE_PUBLIC_BUCKET_MAX_SIZE must be a positive IEC size such as 5GiB."
+    [[ "$public_bucket_max_objects" =~ ^[1-9][0-9]{0,8}$ ]] \
+      || die "GARAGE_PUBLIC_BUCKET_MAX_OBJECTS must be an integer from 1 to 999999999."
+    printf '==> Apply Garage bucket quotas: %s, %s objects\n' \
+      "$public_bucket_max_size" "$public_bucket_max_objects"
+    compose_with_env "$directory" "$directory/.env" exec -T garage \
+      /garage bucket set-quotas "$public_bucket" \
+        --max-size "$public_bucket_max_size" \
+        --max-objects "$public_bucket_max_objects"
+    printf '==> Enable read-only website access for Garage bucket: %s\n' "$public_bucket"
+    compose_with_env "$directory" "$directory/.env" exec -T garage \
+      /garage bucket website --allow "$public_bucket"
+  fi
+
+  printf 'Infrastructure deployment finished: %s\n' "$target"
 }
 
 deploy_app() {
@@ -228,6 +315,8 @@ target_details() {
   validate_target_name "$target"
   if [[ "$target" == "traefik" ]]; then
     directory="$TRAEFIK_DIR"
+  elif [[ -f "$INFRASTRUCTURE_DIR/$target/compose.yaml" ]]; then
+    directory="$(infrastructure_dir "$target")"
   else
     directory="$(app_dir "$target")"
   fi
@@ -287,9 +376,13 @@ main() {
       require_docker_compose
       local target=${2:-}
       [[ -n "$target" ]] || die "A deployment target is required."
+      validate_target_name "$target"
       if [[ "$target" == "traefik" ]]; then
         [[ $# -eq 2 ]] || die "Traefik deployment does not accept an image tag."
         deploy_traefik
+      elif [[ -f "$INFRASTRUCTURE_DIR/$target/compose.yaml" ]]; then
+        [[ $# -eq 2 ]] || die "Infrastructure deployment does not accept an image tag."
+        deploy_infrastructure "$target"
       else
         [[ $# -eq 3 ]] || die "Application deployment requires an image tag."
         deploy_app "$target" "$3"
@@ -313,6 +406,18 @@ main() {
       require_docker_compose
       [[ $# -eq 2 ]] || die "restart requires exactly one target."
       restart_target "$2"
+      ;;
+    backup)
+      require_docker_compose
+      [[ $# -eq 3 ]] || die "backup requires a target and an existing output directory."
+      [[ "$2" == "postgres" ]] || die "Backup is currently supported only for postgres."
+      acquire_lock
+      OPS_LOCK_HELD=1 bash "$ROOT_DIR/scripts/postgres-backup.sh" "$3"
+      ;;
+    check)
+      [[ $# -eq 2 ]] || die "check requires exactly one target."
+      [[ "$2" == "garage" ]] || die "Check is currently supported only for garage."
+      bash "$ROOT_DIR/scripts/garage-check.sh"
       ;;
     validate)
       [[ $# -eq 1 ]] || die "validate does not accept additional arguments."

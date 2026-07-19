@@ -4,6 +4,7 @@
 
 - 生命周期变更优先使用 `bash scripts/ops.sh`。
 - 原始 Compose 命令必须在目标栈目录执行。
+- 共享基础设施只允许手动部署，并在变更持久化服务前创建可恢复备份。
 - 应用部署必须指定明确镜像标签。
 - `.env` 保存 Compose 插值和当前部署标签，`runtime.env` 保存传入容器的变量。
 - 不手动编辑 Git 跟踪文件来修复服务器运行状态。
@@ -17,6 +18,24 @@ cd ~/my-cloud-infra/infrastructure/traefik
 docker compose config
 docker compose ps
 docker compose logs -f traefik
+```
+
+PostgreSQL：
+
+```bash
+cd ~/my-cloud-infra/infrastructure/postgres
+docker compose config
+docker compose ps
+docker compose logs -f postgres
+```
+
+Garage：
+
+```bash
+cd ~/my-cloud-infra/infrastructure/garage
+docker compose config
+docker compose ps
+docker compose logs -f garage
 ```
 
 应用：
@@ -83,6 +102,10 @@ bash scripts/ops.sh init-env config/env.json
 把所有由腾讯云 DNS 托管、需要预申请根域和通配符证书的域名写入 `traefik.domains` 数组。`DOMAIN_NAME` 必须是数组中的一项；初始化脚本会把数组展开为 `infrastructure/traefik/runtime.env` 中的 Traefik 索引环境变量，无需手工维护编号。
 
 所有应用 `.env` 中的 `IMAGE_REPOSITORY`、`APP_DOMAIN` 和初始 `IMAGE_TAG` 都必须在恢复 `repository_dispatch` 自动部署前配置完成；`ops.sh` 不再从公开仓库推断这些值。已有目标环境文件会被初始化脚本跳过而不会覆盖。
+
+如果需要部署共享 PostgreSQL，同时为 `infrastructure/postgres/.env` 和 `infrastructure/postgres/runtime.env` 填写与模板一致的值。数据库密码只保存在受保护的引导配置和服务器运行时文件中；初始化完成后删除 `config/env.json`，或者把它作为密钥备份保护。
+
+如果需要部署共享 Garage，同时填写 `infrastructure/garage/.env` 和 `infrastructure/garage/runtime.env`。公开媒体域名必须解析到服务器；RPC 密钥和 S3 初始化凭据只保存在运行时文件和受保护的备份中。生成格式、单节点风险和首次验证步骤见 [Garage 对象存储运维](garage.md)。
 
 保留现有 ACME 账户和证书状态，避免切换时重新申请证书：
 
@@ -154,6 +177,8 @@ docker volume rm <已确认废弃的数据卷>
 
 ```bash
 bash scripts/ops.sh deploy traefik
+bash scripts/ops.sh deploy postgres
+bash scripts/ops.sh deploy garage
 bash scripts/ops.sh deploy <app-id> <已记录的标签>
 # 对 apps/ 下的每个应用重复上一条命令
 ```
@@ -162,6 +187,9 @@ bash scripts/ops.sh deploy <app-id> <已记录的标签>
 
 ```bash
 bash scripts/ops.sh status
+bash scripts/ops.sh status postgres
+bash scripts/ops.sh status garage
+bash scripts/ops.sh check garage
 curl -fsS https://traefik.<你的域名>/
 curl -fsS https://<应用的 APP_DOMAIN>/
 docker system df
@@ -172,6 +200,8 @@ docker system df
 ## 部署失败和旧版本重新部署
 
 `ops.sh deploy` 要求应用 `.env` 已存在，并使用临时 `.env.next.*` 只替换其中的 `IMAGE_TAG` 后启动目标镜像。成功后才替换当前 `.env`；失败时保留旧 `.env`、域名和镜像仓库配置，并尝试恢复旧标签。
+
+共享基础设施使用仓库中固定的镜像版本，不接受运行时镜像标签。PostgreSQL 变更前必须先按照 [PostgreSQL 运维](postgres.md) 创建异机备份；Garage 变更前必须同时保护元数据卷和数据卷，详见 [Garage 对象存储运维](garage.md)。基础设施部署失败不会自动更换数据卷或执行降级。
 
 自动部署会在 `git pull` 之前获取与 `ops.sh` 相同的 `.ops.lock`，避免 Action 更新仓库文件时服务器上正好存在手动部署或重启操作。
 
@@ -194,11 +224,22 @@ docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
 
 # 网络成员
 docker network inspect traefik-net
+docker network inspect postgres-net
+docker network inspect garage-net
 
 # Traefik 与 Socket Proxy 状态
 cd ~/my-cloud-infra/infrastructure/traefik
 docker compose ps
 docker compose logs --tail 100 traefik socket-proxy
+
+# PostgreSQL 状态与备份
+cd ~/my-cloud-infra
+bash scripts/ops.sh status postgres
+bash scripts/ops.sh backup postgres ~/backups/postgres
+
+# Garage 状态与容量边界
+bash scripts/ops.sh status garage
+bash scripts/ops.sh check garage
 
 # 配置验证
 cd ~/my-cloud-infra

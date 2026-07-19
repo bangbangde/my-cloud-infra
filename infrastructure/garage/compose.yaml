@@ -1,0 +1,67 @@
+name: garage
+
+services:
+  garage:
+    image: dxflrs/garage:v2.3.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690
+    restart: unless-stopped
+    env_file:
+      - path: ./runtime.env
+        required: true
+    environment:
+      GARAGE_CONFIG_FILE: /etc/garage.toml
+      GARAGE_DEFAULT_BUCKET: ${GARAGE_PUBLIC_BUCKET:?GARAGE_PUBLIC_BUCKET is required}
+      RUST_LOG: garage=info
+    command:
+      - /garage
+      - server
+      - --single-node
+      - --default-bucket
+    volumes:
+      - ./garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    networks:
+      - garage-net
+      - traefik-net
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 60s
+    healthcheck:
+      test:
+        - CMD
+        - /garage
+        - status
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.garage-web.rule=Host(`${GARAGE_PUBLIC_DOMAIN:?GARAGE_PUBLIC_DOMAIN is required}`)"
+      - "traefik.http.routers.garage-web.entrypoints=websecure"
+      - "traefik.http.routers.garage-web.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.garage-web.service=garage-web"
+      - "traefik.http.routers.garage-web.middlewares=garage-web-bucket,garage-web-headers"
+      - "traefik.http.services.garage-web.loadbalancer.server.port=3902"
+      - "traefik.http.middlewares.garage-web-bucket.headers.customrequestheaders.Host=${GARAGE_PUBLIC_BUCKET:?GARAGE_PUBLIC_BUCKET is required}"
+      - "traefik.http.middlewares.garage-web-headers.headers.contenttypenosniff=true"
+      - "traefik.http.middlewares.garage-web-headers.headers.referrerpolicy=no-referrer"
+
+networks:
+  garage-net:
+    name: garage-net
+    internal: true
+  traefik-net:
+    external: true
+    name: traefik-net
+
+volumes:
+  garage-meta:
+    name: garage-meta
+  garage-data:
+    name: garage-data

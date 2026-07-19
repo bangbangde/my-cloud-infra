@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       service:
-        description: "Traefik 或 apps/ 下的应用目录名"
+        description: "Traefik、PostgreSQL、Garage 或 apps/ 下的应用目录名"
         required: true
         type: string
       image_tag:
-        description: "应用镜像标签；部署 Traefik 时留空"
+        description: "应用镜像标签；部署基础设施时留空"
         required: false
         type: string
       confirm:
@@ -58,13 +58,13 @@ jobs:
             exit 1
           fi
 
-          if [[ "$SERVICE" == "traefik" ]]; then
+          if [[ "$SERVICE" == "traefik" || "$SERVICE" == "postgres" || "$SERVICE" == "garage" ]]; then
             if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
-              echo "Traefik can only be deployed manually."
+              echo "Infrastructure services can only be deployed manually."
               exit 1
             fi
             if [[ -n "$IMAGE_TAG" ]]; then
-              echo "Traefik deployment does not accept an image tag."
+              echo "Infrastructure deployment does not accept an image tag."
               exit 1
             fi
           else
@@ -109,8 +109,8 @@ jobs:
 
             git pull --ff-only origin main
 
-            if [[ "$SERVICE" == "traefik" ]]; then
-              bash ./scripts/ops.sh deploy traefik
+            if [[ -f "infrastructure/${SERVICE}/compose.yaml" ]]; then
+              bash ./scripts/ops.sh deploy "$SERVICE"
               exit 0
             fi
 

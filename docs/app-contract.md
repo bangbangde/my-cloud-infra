@@ -132,6 +132,42 @@ volumes:
 
 持久化服务还必须补充备份和恢复说明，禁止把 `docker compose down -v` 当作常规操作。
 
+## 共享数据库
+
+数据库被多个应用使用时，它不再属于任何单一应用，应由 `infrastructure/<service>/` 中的独立 Compose 项目管理。当前共享 PostgreSQL 栈位于 `infrastructure/postgres/`，并创建内部 `postgres-net`。
+
+需要访问 PostgreSQL 的应用只把自己的主服务加入该 external network：
+
+```yaml
+services:
+  my-app:
+    networks:
+      - traefik-net
+      - postgres-net
+
+networks:
+  traefik-net:
+    external: true
+    name: traefik-net
+  postgres-net:
+    external: true
+    name: postgres-net
+```
+
+应用使用 `postgres:5432` 作为内部地址。PostgreSQL 不加入 `traefik-net`，也不发布宿主机端口。每个应用必须使用独立数据库和登录角色，凭据保存在该应用忽略的运行时环境文件中；不得使用 PostgreSQL 超级用户作为应用凭据。
+
+共享数据库的首次部署、备份、恢复与升级以 [PostgreSQL 运维](postgres.md) 为准。数据库栈必须先于消费者部署；单个应用的发布和回退不得删除或重建共享数据卷。
+
+## 共享对象存储
+
+共享 Garage 栈位于 `infrastructure/garage/`，并创建 internal `garage-net`。需要 S3 API 的应用只把自己的后端服务加入该 external network，使用 `http://garage:3900`、`region=garage` 和 path-style URL；不要把 Garage Access Key 写入前端代码。
+
+每个应用使用独立 Access Key，按 Bucket 授予最小读写权限。初始化 Key 只用于引导和运维。应用数据库保存 Bucket、Object Key、MIME、大小和校验和，不保存文件二进制或固定公网 URL。
+
+公开对象由 Traefik 路由到 Garage 的 3902 Web endpoint。当前不对公网路由 3900 S3 API，因此浏览器预签名直传不属于默认契约；如需启用，必须单独评审公网域名、CORS、有效期、文件大小、类型校验和滥用防护。
+
+Garage 的网络、Bucket/Key 创建、容量边界、备份和恢复以 [Garage 对象存储运维](garage.md) 为准。应用发布和回退不得删除 `garage-meta`、`garage-data` 或重建共享 Bucket。
+
 ## 新增应用流程
 
 1. 创建 `apps/<id>/compose.yaml`。

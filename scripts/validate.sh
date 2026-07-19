@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+INFRASTRUCTURE_DIR="$ROOT_DIR/infrastructure"
 TRAEFIK_DIR="$ROOT_DIR/infrastructure/traefik"
 APPS_DIR="$ROOT_DIR/apps"
 VALIDATION_DIRS=()
@@ -116,6 +117,115 @@ grep -F '      POST: "0"' <<<"$traefik_model" >/dev/null \
 grep -A3 -Fx '  docker-api:' <<<"$traefik_model" | grep -Fx '    internal: true' >/dev/null \
   || die "Docker API network must be internal"
 
+printf '==> Validate shared infrastructure Compose models\n'
+infrastructure_count=0
+postgres_found=false
+garage_found=false
+for directory in "$INFRASTRUCTURE_DIR"/*; do
+  [[ -d "$directory" ]] || continue
+  infrastructure_service="$(basename -- "$directory")"
+  [[ "$infrastructure_service" != "traefik" ]] || continue
+  [[ "$infrastructure_service" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
+    || die "Invalid infrastructure directory name: $infrastructure_service"
+  [[ ! -d "$APPS_DIR/$infrastructure_service" ]] \
+    || die "Target name is ambiguous across infrastructure/ and apps/: $infrastructure_service"
+
+  require_file "$directory/compose.yaml"
+  require_file "$directory/.env.example"
+  validate_runtime_env_templates "$directory"
+  prepare_validation_stack "$directory"
+  infrastructure_validation_dir=$VALIDATION_DIR
+
+  infrastructure_model="$(compose_config "$infrastructure_validation_dir" "$infrastructure_validation_dir/.env.example")"
+  infrastructure_services="$(compose_config "$infrastructure_validation_dir" "$infrastructure_validation_dir/.env.example" --services)"
+
+  grep -Fx "$infrastructure_service" <<<"$infrastructure_services" >/dev/null \
+    || die "Primary service in infrastructure/$infrastructure_service/compose.yaml must be named $infrastructure_service"
+  grep -Fx "name: $infrastructure_service" <<<"$infrastructure_model" >/dev/null \
+    || die "Compose project name must resolve to $infrastructure_service"
+
+  if [[ "$infrastructure_service" == "postgres" ]]; then
+    postgres_found=true
+    require_file "$directory/runtime.env.example"
+    require_file "$ROOT_DIR/docs/postgres.md"
+
+    grep -Eq '^    image: postgres:[0-9]+\.[0-9]+-bookworm@sha256:[0-9a-f]{64}$' <<<"$infrastructure_model" \
+      || die "PostgreSQL image must use an exact patch version, Debian variant and digest"
+    [[ "$(grep -Fc '        target: /var/lib/postgresql' <<<"$infrastructure_model" || true)" -eq 1 ]] \
+      || die "PostgreSQL 18 data volume must be mounted at /var/lib/postgresql"
+    grep -A4 -Fx '  postgres-net:' <<<"$infrastructure_model" | grep -Fx '    internal: true' >/dev/null \
+      || die "PostgreSQL network must be internal"
+    grep -F 'max_connections=' <<<"$infrastructure_model" >/dev/null \
+      || die "PostgreSQL max_connections must be explicit"
+
+    if grep -Eq '^    (container_name|ports):' <<<"$infrastructure_model"; then
+      die "PostgreSQL must not set container_name or publish host ports"
+    fi
+    if grep -F 'traefik-net' <<<"$infrastructure_model" >/dev/null; then
+      die "PostgreSQL must not attach to traefik-net"
+    fi
+
+    for variable in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB POSTGRES_INITDB_ARGS; do
+      grep -Eq "^${variable}=" "$directory/runtime.env.example" \
+        || die "infrastructure/postgres/runtime.env.example must define $variable"
+    done
+  elif [[ "$infrastructure_service" == "garage" ]]; then
+    garage_found=true
+    require_file "$directory/runtime.env.example"
+    require_file "$directory/garage.toml"
+    require_file "$ROOT_DIR/docs/garage.md"
+
+    grep -Eq '^    image: dxflrs/garage:v[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$' <<<"$infrastructure_model" \
+      || die "Garage image must use an exact version and digest"
+    [[ "$(grep -Fc '        target: /var/lib/garage/meta' <<<"$infrastructure_model" || true)" -eq 1 ]] \
+      || die "Garage metadata volume must be mounted at /var/lib/garage/meta"
+    [[ "$(grep -Fc '        target: /var/lib/garage/data' <<<"$infrastructure_model" || true)" -eq 1 ]] \
+      || die "Garage data volume must be mounted at /var/lib/garage/data"
+    grep -A4 -Fx '  garage-net:' <<<"$infrastructure_model" | grep -Fx '    internal: true' >/dev/null \
+      || die "Garage application network must be internal"
+    grep -F 'traefik.http.services.garage-web.loadbalancer.server.port' <<<"$infrastructure_model" \
+      | grep -F '3902' >/dev/null \
+      || die "Garage public router must use only the read-only web endpoint on port 3902"
+
+    if grep -Eq '^    (container_name|ports):' <<<"$infrastructure_model"; then
+      die "Garage must not set container_name or publish host ports"
+    fi
+    if grep -F 'traefik.http.services.garage-web.loadbalancer.server.port' <<<"$infrastructure_model" \
+      | grep -F '3900' >/dev/null; then
+      die "Garage S3 API must not be routed publicly"
+    fi
+
+    for variable in GARAGE_RPC_SECRET GARAGE_DEFAULT_ACCESS_KEY GARAGE_DEFAULT_SECRET_KEY; do
+      grep -Eq "^${variable}=" "$directory/runtime.env.example" \
+        || die "infrastructure/garage/runtime.env.example must define $variable"
+    done
+    for variable in \
+      GARAGE_PUBLIC_DOMAIN \
+      GARAGE_PUBLIC_BUCKET \
+      GARAGE_PUBLIC_BUCKET_MAX_SIZE \
+      GARAGE_PUBLIC_BUCKET_MAX_OBJECTS; do
+      grep -Eq "^${variable}=" "$directory/.env.example" \
+        || die "infrastructure/garage/.env.example must define $variable"
+    done
+
+    grep -Fx 'replication_factor = 1' "$directory/garage.toml" >/dev/null \
+      || die "Garage single-node deployment must use replication_factor = 1"
+    grep -Fx 'db_engine = "sqlite"' "$directory/garage.toml" >/dev/null \
+      || die "Garage single-node metadata must use SQLite"
+    grep -Fx 'metadata_fsync = true' "$directory/garage.toml" >/dev/null \
+      || die "Garage metadata fsync must be enabled"
+    grep -Fx 'data_fsync = true' "$directory/garage.toml" >/dev/null \
+      || die "Garage data fsync must be enabled"
+    grep -Fx 'rpc_bind_addr = "127.0.0.1:3901"' "$directory/garage.toml" >/dev/null \
+      || die "Garage RPC must bind only to container loopback in single-node mode"
+  fi
+
+  infrastructure_count=$((infrastructure_count + 1))
+done
+
+[[ "$postgres_found" == true ]] || die "PostgreSQL infrastructure stack is required."
+[[ "$garage_found" == true ]] || die "Garage infrastructure stack is required."
+
 printf '==> Validate application Compose models\n'
 app_count=0
 for directory in "$APPS_DIR"/*; do
@@ -155,4 +265,5 @@ done
 
 [[ "$app_count" -gt 0 ]] || die "No applications found under apps/."
 
-printf 'Validation passed for Traefik and %s application(s).\n' "$app_count"
+printf 'Validation passed for Traefik, %s shared infrastructure service(s) and %s application(s).\n' \
+  "$infrastructure_count" "$app_count"
