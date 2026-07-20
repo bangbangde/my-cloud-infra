@@ -38,7 +38,6 @@ services:
 networks:
   postgres-net:
     name: postgres-net
-    internal: true
 
 volumes:
   postgres-data:

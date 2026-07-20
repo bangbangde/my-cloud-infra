@@ -6,7 +6,7 @@
 
 - RPO：24 小时，通过每日逻辑备份满足。
 - RTO：不限定，采用人工恢复，不维护热备或自动故障切换。
-- PostgreSQL 不加入 `traefik-net`；同机应用通过内部 `postgres-net` 连接，宿主机 `5432` 仅绑定回环地址，供 SSH 隧道运维使用。
+- PostgreSQL 不加入 `traefik-net`；同机应用通过专用的 `postgres-net` 连接，宿主机 `5432` 仅绑定回环地址，供 SSH 隧道运维使用。
 
 每个应用应拥有独立数据库和登录角色。共享实例不等于共享数据库、Schema 或超级用户。
 
@@ -99,6 +99,17 @@ ssh -N -L 15432:127.0.0.1:5432 <server-user>@<server-host>
 - Password：对应角色的数据库密码
 
 本机端口 `15432` 可以替换为其他未占用端口。不要把管理员凭据保存到仓库文件中。
+
+`postgres-net` 必须保持为普通的专用 bridge 网络，不能设置 `internal: true`；Docker 的内部网络不会建立宿主机端口映射。从旧配置迁移时，网络属性不能原地修改，需要先停止所有加入 `postgres-net` 的服务，再执行：
+
+```bash
+cd ~/my-cloud-infra/infrastructure/postgres
+docker compose down
+docker compose up -d --wait
+docker compose port postgres 5432
+```
+
+最后一条命令应输出 `127.0.0.1:5432`。不要给 `docker compose down` 添加 `-v`；具名数据卷 `postgres-data` 必须保留。随后重新部署依赖该网络的应用。
 
 如果后续需要把迁移权限与运行时权限分离，再为该应用增加独立 migration role；当前个人服务不预先增加这层复杂度。
 

@@ -18,8 +18,12 @@ services:
       - "traefik.http.routers.codebuff-next.tls.certresolver=letsencrypt"
     networks:
       - traefik-net
+      - postgres-net
 
 networks:
   traefik-net:
     external: true
     name: traefik-net
+  postgres-net:
+    external: true
+    name: postgres-net

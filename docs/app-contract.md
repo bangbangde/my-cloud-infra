@@ -134,7 +134,7 @@ volumes:
 
 ## 共享数据库
 
-数据库被多个应用使用时，它不再属于任何单一应用，应由 `infrastructure/<service>/` 中的独立 Compose 项目管理。当前共享 PostgreSQL 栈位于 `infrastructure/postgres/`，并创建内部 `postgres-net`。
+数据库被多个应用使用时，它不再属于任何单一应用，应由 `infrastructure/<service>/` 中的独立 Compose 项目管理。当前共享 PostgreSQL 栈位于 `infrastructure/postgres/`，并创建专用的 `postgres-net`。
 
 需要访问 PostgreSQL 的应用只把自己的主服务加入该 external network：
 
@@ -154,7 +154,7 @@ networks:
     name: postgres-net
 ```
 
-应用使用 `postgres:5432` 作为内部地址。PostgreSQL 不加入 `traefik-net`；其宿主机端口仅绑定到 `127.0.0.1:5432`，供 SSH 隧道运维使用，不对公网监听。每个应用必须使用独立数据库和登录角色，凭据保存在该应用忽略的运行时环境文件中；不得使用 PostgreSQL 超级用户作为应用凭据。
+应用使用 `postgres:5432` 作为专用网络地址。PostgreSQL 不加入 `traefik-net`；其宿主机端口仅绑定到 `127.0.0.1:5432`，供 SSH 隧道运维使用，不对公网监听。`postgres-net` 不设置 `internal: true`，因为 Docker 的内部网络不会建立宿主机端口映射。每个应用必须使用独立数据库和登录角色，凭据保存在该应用忽略的运行时环境文件中；不得使用 PostgreSQL 超级用户作为应用凭据。
 
 共享数据库的首次部署、备份、恢复与升级以 [PostgreSQL 运维](postgres.md) 为准。数据库栈必须先于消费者部署；单个应用的发布和回退不得删除或重建共享数据卷。
 

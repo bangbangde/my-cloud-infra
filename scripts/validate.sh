@@ -153,8 +153,11 @@ for directory in "$INFRASTRUCTURE_DIR"/*; do
       || die "PostgreSQL image must use an exact patch version, Debian variant and digest"
     [[ "$(grep -Fc '        target: /var/lib/postgresql' <<<"$infrastructure_model" || true)" -eq 1 ]] \
       || die "PostgreSQL 18 data volume must be mounted at /var/lib/postgresql"
-    grep -A4 -Fx '  postgres-net:' <<<"$infrastructure_model" | grep -Fx '    internal: true' >/dev/null \
-      || die "PostgreSQL network must be internal"
+    grep -A4 -Fx '  postgres-net:' <<<"$infrastructure_model" | grep -Fx '    name: postgres-net' >/dev/null \
+      || die "PostgreSQL network must use the stable postgres-net name"
+    if grep -A4 -Fx '  postgres-net:' <<<"$infrastructure_model" | grep -Fx '    internal: true' >/dev/null; then
+      die "PostgreSQL network must allow the host loopback port mapping"
+    fi
     grep -F 'max_connections=' <<<"$infrastructure_model" >/dev/null \
       || die "PostgreSQL max_connections must be explicit"
 
@@ -264,6 +267,13 @@ for directory in "$APPS_DIR"/*; do
   fi
   grep -Eq '^      traefik-net:' <<<"$app_model" \
     || die "apps/$app/compose.yaml must attach a service to traefik-net"
+
+  if [[ "$app" == "codebuff-next" ]]; then
+    grep -Eq '^      postgres-net:' <<<"$app_model" \
+      || die "apps/codebuff-next/compose.yaml must attach the service to postgres-net"
+    grep -A4 -Fx '  postgres-net:' <<<"$app_model" | grep -Fx '    external: true' >/dev/null \
+      || die "apps/codebuff-next/compose.yaml must declare postgres-net as external"
+  fi
 
   app_count=$((app_count + 1))
 done
