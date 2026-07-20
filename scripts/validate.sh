@@ -158,8 +158,13 @@ for directory in "$INFRASTRUCTURE_DIR"/*; do
     grep -F 'max_connections=' <<<"$infrastructure_model" >/dev/null \
       || die "PostgreSQL max_connections must be explicit"
 
-    if grep -Eq '^    (container_name|ports):' <<<"$infrastructure_model"; then
-      die "PostgreSQL must not set container_name or publish host ports"
+    if grep -Eq '^    container_name:' <<<"$infrastructure_model"; then
+      die "PostgreSQL must not set container_name"
+    fi
+    if [[ "$(grep -Fc '      host_ip: 127.0.0.1' <<<"$infrastructure_model" || true)" -ne 1 ]] \
+      || [[ "$(grep -Fc '      target: 5432' <<<"$infrastructure_model" || true)" -ne 1 ]] \
+      || [[ "$(grep -Fc '      published: "5432"' <<<"$infrastructure_model" || true)" -ne 1 ]]; then
+      die "PostgreSQL must publish port 5432 only on the host loopback address"
     fi
     if grep -F 'traefik-net' <<<"$infrastructure_model" >/dev/null; then
       die "PostgreSQL must not attach to traefik-net"
