@@ -21,6 +21,7 @@ Usage:
   bash scripts/ops.sh status [target]
   bash scripts/ops.sh logs <target>
   bash scripts/ops.sh restart <target>
+  bash scripts/ops.sh reload-env [target|all]
   bash scripts/ops.sh backup postgres <existing-output-directory>
   bash scripts/ops.sh check garage
   bash scripts/ops.sh validate
@@ -391,6 +392,46 @@ restart_target() {
   compose_with_env "$directory" "$env_file" ps "$target"
 }
 
+reload_env_target() {
+  local target=$1
+  local details
+  local directory
+  local env_file
+
+  details="$(target_details "$target")"
+  directory="$(printf '%s\n' "$details" | sed -n '1p')"
+  env_file="$(printf '%s\n' "$details" | sed -n '2p')"
+  require_runtime_envs "$directory"
+
+  printf '==> Reload environment and recreate stack: %s\n' "$target"
+  compose_with_env "$directory" "$env_file" config --quiet
+  compose_with_env "$directory" "$env_file" \
+    up -d --force-recreate --wait --wait-timeout 120
+  report_health_contract "$directory" "$env_file" "$target"
+}
+
+reload_all_envs() {
+  local directory
+  local target
+
+  reload_env_target traefik
+
+  for directory in "$INFRASTRUCTURE_DIR"/*; do
+    [[ -f "$directory/compose.yaml" ]] || continue
+    target="$(basename -- "$directory")"
+    [[ "$target" != "traefik" ]] || continue
+    reload_env_target "$target"
+  done
+
+  for directory in "$APPS_DIR"/*; do
+    [[ -f "$directory/compose.yaml" ]] || continue
+    target="$(basename -- "$directory")"
+    reload_env_target "$target"
+  done
+
+  printf 'Environment reload finished for all stacks.\n'
+}
+
 main() {
   local command=${1:-help}
   case "$command" in
@@ -432,6 +473,16 @@ main() {
       require_docker_compose
       [[ $# -eq 2 ]] || die "restart requires exactly one target."
       restart_target "$2"
+      ;;
+    reload-env)
+      require_docker_compose
+      [[ $# -le 2 ]] || die "reload-env accepts at most one target."
+      acquire_lock
+      if [[ $# -eq 1 || "${2:-}" == "all" ]]; then
+        reload_all_envs
+      else
+        reload_env_target "$2"
+      fi
       ;;
     backup)
       require_docker_compose

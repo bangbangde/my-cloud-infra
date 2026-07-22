@@ -64,6 +64,20 @@ docker compose logs -f "$APP_ID"
 
 因为 Compose 文件与 `.env` 位于同一目录，这些命令不会读取其他栈的环境文件。自动化脚本仍会显式传入 `--project-directory` 和 `--env-file`。
 
+## 重新读取环境文件
+
+`docker compose restart` 和 `bash scripts/ops.sh restart <target>` 只重启现有容器，不会重新读取 `env_file`。环境文件内容变更后，使用：
+
+```bash
+# 按 Traefik、共享基础设施、应用的顺序强制重建全部栈
+bash scripts/ops.sh reload-env
+
+# 只重建指定栈
+bash scripts/ops.sh reload-env postgres
+```
+
+该命令会先校验目标 Compose 配置，再执行 `up -d --force-recreate --wait`。它不会拉取镜像、更新应用标签或运行应用迁移；任一栈失败后立即停止，尚未处理的栈保持不变。
+
 ## 从旧目录布局迁移
 
 这次迁移会改变 Compose 项目名并移除 `container_name`。旧容器和旧 `traefik-net` 不能与新栈直接并存，首次切换需要短暂停机。

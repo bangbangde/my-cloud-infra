@@ -146,9 +146,13 @@ bash scripts/ops.sh status <app-id>
 bash scripts/ops.sh status postgres
 bash scripts/ops.sh status garage
 
-# 查看日志或重启主服务
+# 查看日志或普通重启主服务（不会重新读取环境文件）
 bash scripts/ops.sh logs <app-id>
 bash scripts/ops.sh restart <app-id>
+
+# 重新读取环境文件并强制重建全部栈；也可以只指定一个目标
+bash scripts/ops.sh reload-env
+bash scripts/ops.sh reload-env postgres
 
 # 创建 PostgreSQL 逻辑备份归档；完成后还必须复制到异机存储
 bash scripts/ops.sh backup postgres <已存在的备份目录>
