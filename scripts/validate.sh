@@ -40,6 +40,31 @@ compose_config() {
     config "$@"
 }
 
+compose_profile_config() {
+  local directory=$1
+  local env_file=$2
+  local profile=$3
+  shift 3
+
+  docker compose \
+    --project-directory "$directory" \
+    --env-file "$env_file" \
+    -f "$directory/compose.yaml" \
+    --profile "$profile" \
+    config "$@"
+}
+
+compose_service_block() {
+  local model=$1
+  local service=$2
+
+  awk -v header="  ${service}:" '
+    $0 == header { inside = 1 }
+    inside && $0 != header && ($0 ~ /^[^ ]/ || $0 ~ /^  [^ ]/) { exit }
+    inside { print }
+  ' <<<"$model"
+}
+
 require_file() {
   [[ -f "$1" ]] || die "Missing ${1#"$ROOT_DIR"/}"
 }
@@ -249,6 +274,20 @@ for directory in "$APPS_DIR"/*; do
   app_model="$(compose_config "$app_validation_dir" "$app_validation_dir/.env.example")"
   app_services="$(compose_config "$app_validation_dir" "$app_validation_dir/.env.example" --services)"
   app_variables="$(compose_config "$app_validation_dir" "$app_validation_dir/.env.example" --variables)"
+  app_migration_model="$(
+    compose_profile_config \
+      "$app_validation_dir" \
+      "$app_validation_dir/.env.example" \
+      '*'
+  )"
+  app_migration_services="$(
+    compose_profile_config \
+      "$app_validation_dir" \
+      "$app_validation_dir/.env.example" \
+      '*' \
+      --services
+  )"
+  migration_service="${app}-migrate"
 
   grep -Fx "$app" <<<"$app_services" >/dev/null \
     || die "Primary service in apps/$app/compose.yaml must be named $app"
@@ -268,11 +307,50 @@ for directory in "$APPS_DIR"/*; do
   grep -Eq '^      traefik-net:' <<<"$app_model" \
     || die "apps/$app/compose.yaml must attach a service to traefik-net"
 
+  if grep -Fx -- "$migration_service" <<<"$app_migration_services" >/dev/null; then
+    app_service_block="$(compose_service_block "$app_migration_model" "$app")"
+    migration_service_block="$(compose_service_block "$app_migration_model" "$migration_service")"
+    migration_source_block="$(compose_service_block "$(<"$directory/compose.yaml")" "$migration_service")"
+    app_image="$(sed -n 's/^    image: //p' <<<"$app_service_block")"
+    migration_image="$(sed -n 's/^    image: //p' <<<"$migration_service_block")"
+
+    [[ -n "$migration_service_block" ]] \
+      || die "Unable to inspect migration service: $migration_service"
+    [[ -n "$app_image" && "$migration_image" == "$app_image" ]] \
+      || die "apps/$app migration service must use the same image as $app"
+    grep -A2 -Fx '    profiles:' <<<"$migration_service_block" | grep -Fx '      - migration' >/dev/null \
+      || die "apps/$app migration service must use the migration profile"
+    grep -Fx '    restart: "no"' <<<"$migration_service_block" >/dev/null \
+      || die "apps/$app migration service must set restart: no"
+    grep -Fx '    command:' <<<"$migration_service_block" >/dev/null \
+      || die "apps/$app migration service must define an explicit command"
+    grep -A2 -Fx '    security_opt:' <<<"$migration_service_block" \
+      | grep -Fx '      - no-new-privileges:true' >/dev/null \
+      || die "apps/$app migration service must enable no-new-privileges"
+    grep -A3 -Fx '    env_file:' <<<"$migration_source_block" \
+      | grep -Fx '      - path: ./migration.runtime.env' >/dev/null \
+      || die "apps/$app migration service must read migration.runtime.env"
+    grep -A3 -Fx '    env_file:' <<<"$migration_source_block" \
+      | grep -Fx '        required: true' >/dev/null \
+      || die "apps/$app migration.runtime.env must be required"
+
+    if grep -Eq '^    (container_name|labels|ports):' <<<"$migration_service_block"; then
+      die "apps/$app migration service must not set container_name, labels or host ports"
+    fi
+    if grep -Eq '^      traefik-net:' <<<"$migration_service_block"; then
+      die "apps/$app migration service must not attach to traefik-net"
+    fi
+  fi
+
   if [[ "$app" == "codebuff-next" ]]; then
     grep -Eq '^      postgres-net:' <<<"$app_model" \
       || die "apps/codebuff-next/compose.yaml must attach the service to postgres-net"
     grep -A4 -Fx '  postgres-net:' <<<"$app_model" | grep -Fx '    external: true' >/dev/null \
       || die "apps/codebuff-next/compose.yaml must declare postgres-net as external"
+    if grep -Fx -- "$migration_service" <<<"$app_migration_services" >/dev/null; then
+      grep -Eq '^      postgres-net:' <<<"$migration_service_block" \
+        || die "apps/codebuff-next migration service must attach to postgres-net"
+    fi
   fi
 
   app_count=$((app_count + 1))

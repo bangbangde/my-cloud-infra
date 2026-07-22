@@ -94,6 +94,36 @@ services:
 
 同时提交 `runtime.env.example`，但不能提交实际 `runtime.env`。需要按服务隔离变量时，使用成对的 `<service>.runtime.env` 与 `<service>.runtime.env.example`；校验脚本会把 Compose 文件和模板复制到受控临时目录完成模型验证，不会在真实栈目录生成运行时文件。运维脚本会在部署前要求实际文件存在。
 
+## 可选的部署前迁移
+
+需要数据库迁移的应用以 `<app-id>-migrate` 声明一次性 Compose 服务。迁移服务必须使用与主服务完全相同的目标镜像、加入 `migration` profile、显式设置 `restart: "no"` 和迁移命令，并从必需的 `migration.runtime.env` 读取只在部署阶段使用的凭据。例如：
+
+```yaml
+services:
+  my-app:
+    image: ${IMAGE_REPOSITORY:?IMAGE_REPOSITORY is required}:${IMAGE_TAG:?IMAGE_TAG is required}
+
+  my-app-migrate:
+    image: ${IMAGE_REPOSITORY:?IMAGE_REPOSITORY is required}:${IMAGE_TAG:?IMAGE_TAG is required}
+    profiles:
+      - migration
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - node
+      - migrate/index.js
+    env_file:
+      - path: ./migration.runtime.env
+        required: true
+    networks:
+      - postgres-net
+```
+
+同时提交只含占位值的 `migration.runtime.env.example`。迁移服务不得设置 `container_name`、Traefik labels 或宿主机端口，也不得加入 `traefik-net`；它由 `ops.sh deploy` 在拉取目标镜像后以 `docker compose run --rm --no-deps` 调用，不作为常驻服务启动。
+
+`ops.sh` 只发现服务并在每次部署中调用迁移命令一次，不解析迁移文件或判断数据库版本。迁移程序必须用数据库内的历史记录和锁保证重复调用安全：没有待执行迁移时退出 `0`，失败时返回非零。失败会阻止新应用启动并保留当前镜像标签，但已经提交的数据库变更不会由 `ops.sh` 自动回滚；迁移必须保持旧应用可继续运行。
+
 ## 私有数据库
 
 数据库属于单个应用时，与应用放在同一个 Compose 项目：

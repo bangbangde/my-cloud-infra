@@ -176,6 +176,30 @@ report_health_contract() {
   fi
 }
 
+run_app_migrations_if_configured() {
+  local directory=$1
+  local env_file=$2
+  local app=$3
+  local migration_service="${app}-migrate"
+  local services
+
+  services="$(
+    compose_with_env "$directory" "$env_file" \
+      --profile migration config --services
+  )"
+
+  if ! grep -Fx -- "$migration_service" <<<"$services" >/dev/null; then
+    printf 'No migration service declared for %s; skipping migrations.\n' "$app"
+    return
+  fi
+
+  printf '==> Run application migrations: %s\n' "$migration_service"
+  if ! compose_with_env "$directory" "$env_file" \
+    --profile migration run --rm --no-deps "$migration_service"; then
+    die "Migration failed for $app; the current application version was left unchanged."
+  fi
+}
+
 deploy_traefik() {
   [[ -f "$TRAEFIK_DIR/compose.yaml" ]] || die "Traefik compose file not found."
   require_stack_env "$TRAEFIK_DIR"
@@ -283,6 +307,8 @@ deploy_app() {
 
   printf '==> Pull application image\n'
   compose_with_env "$directory" "$TEMP_ENV" pull "$app"
+
+  run_app_migrations_if_configured "$directory" "$TEMP_ENV" "$app"
 
   printf '==> Start application\n'
   if compose_with_env "$directory" "$TEMP_ENV" up -d --wait --wait-timeout 120 "$app"; then

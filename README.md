@@ -99,6 +99,8 @@ Garage 的 `.env` 保存公开媒体域名和默认公开 Bucket，`runtime.env`
 
 每个应用的 `.env` 至少包含 `IMAGE_REPOSITORY`、`APP_DOMAIN` 和 `IMAGE_TAG`。`scripts/ops.sh deploy` 只更新 `IMAGE_TAG`，不会覆盖其他环境级配置；实际域名和镜像命名空间不进入公开仓库。
 
+应用可以通过同镜像的 `<app-id>-migrate` profile 服务选择性启用部署前迁移。部署脚本拉取目标镜像后调用一次迁移服务，成功才替换 Web 应用；未声明迁移服务的应用不会增加额外步骤。迁移版本判断和重复执行安全性由应用镜像内的迁移程序负责，数据库变更不会随镜像回退自动撤销。详细契约见 [应用 Compose 契约](docs/app-contract.md#可选的部署前迁移)。
+
 ## 前置要求
 
 - Linux 服务器
