@@ -20,7 +20,7 @@ Compose 不发布任何宿主机端口。Traefik 只路由 3902，不路由 S3 A
 
 - `.env`：公开媒体域名和首次创建的公开 Bucket 名称。
 - `.env` 同时定义公开 Bucket 的最大容量与对象数；部署时会幂等应用配额。
-- `runtime.env`：RPC 密钥、初始化 Access Key 和 Secret Key。
+- `.env.runtime`：RPC 密钥、初始化 Access Key 和 Secret Key。
 - `garage.toml`：无密钥的 Garage 服务配置。
 - `garage-meta`：SQLite 元数据、节点身份和每日元数据快照。
 - `garage-data`：对象数据块。
@@ -149,7 +149,7 @@ docker compose exec garage /garage bucket allow \
 
 - `garage-meta` 卷。
 - `garage-data` 卷。
-- 忽略的 `.env` 与 `runtime.env`。
+- 忽略的 `.env` 与 `.env.runtime`。
 
 最简单的可靠流程是在停止写入后停止 Garage，把两个卷作为同一恢复点复制到异机，再重新启动；恢复演练应在临时卷上验证对象列表、随机对象校验和和公开读取。不要只备份 `garage-data`，否则丢失元数据后无法把数据块直接当普通文件使用。
 

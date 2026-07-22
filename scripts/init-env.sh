@@ -5,7 +5,7 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 INFRASTRUCTURE_DIR="$ROOT_DIR/infrastructure"
 APPS_DIR="$ROOT_DIR/apps"
-TRAEFIK_RUNTIME_TARGET="infrastructure/traefik/runtime.env"
+TRAEFIK_RUNTIME_TARGET="infrastructure/traefik/.env.runtime"
 
 CONFIG_FILE=""
 STAGING_DIR=""
@@ -172,7 +172,7 @@ discover_targets() {
     EXAMPLE_FILES+=("$example")
   done < <(
     find "$INFRASTRUCTURE_DIR" "$APPS_DIR" -type f \
-      \( -name '.env.example' -o -name 'runtime.env.example' -o -name '*.runtime.env.example' \) \
+      \( -name '.env.example' -o -name '.env.*.example' \) \
       -print0
   )
 

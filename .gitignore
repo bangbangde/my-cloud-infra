@@ -1,8 +1,8 @@
 # 每个 Compose 栈自己的插值与运行时环境文件
 **/.env
-**/runtime.env
-**/*.runtime.env
-**/.env.next.*
+**/.env.*
+!**/.env.example
+!**/.env.*.example
 **/.secrets/
 
 # 首次初始化使用的真实值清单；示例文件 config/env.example.json 仍然跟踪

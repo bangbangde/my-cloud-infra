@@ -86,8 +86,8 @@ main() {
 
   [[ -f "$POSTGRES_DIR/.env" ]] \
     || die "Missing $POSTGRES_DIR/.env; create it from .env.example."
-  [[ -f "$POSTGRES_DIR/runtime.env" ]] \
-    || die "Missing $POSTGRES_DIR/runtime.env; create it from runtime.env.example."
+  [[ -f "$POSTGRES_DIR/.env.runtime" ]] \
+    || die "Missing $POSTGRES_DIR/.env.runtime; create it from .env.runtime.example."
   [[ -d "$1" ]] || die "Backup output directory does not exist: $1"
 
   OUTPUT_DIR="$(cd -- "$1" && pwd)"

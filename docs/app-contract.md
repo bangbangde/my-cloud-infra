@@ -14,7 +14,7 @@
 6. 不得声明 `container_name`。
 7. 对外服务必须加入名为 `traefik-net` 的 external network。
 8. 不得直接发布宿主机端口，除非文档记录了明确原因。
-9. `IMAGE_REPOSITORY`、`APP_DOMAIN` 和 `IMAGE_TAG` 属于 Compose 插值，保存在忽略的 `.env`；容器运行时变量使用 `runtime.env` 或 `<service>.runtime.env`。
+9. `IMAGE_REPOSITORY`、`APP_DOMAIN` 和 `IMAGE_TAG` 属于 Compose 插值，保存在忽略的 `.env`；常驻容器变量使用 `.env.runtime`，一次性迁移变量使用 `.env.migration`，同目录多服务时可使用 `.env.<service>.runtime`。
 10. 新应用应提供有效 HEALTHCHECK；暂时没有时，部署会在容器 running 后成功并输出警告。
 11. 应用必须启用 `no-new-privileges`，并使用 Docker `local` 日志驱动限制日志占用。
 
@@ -88,15 +88,15 @@ labels:
 services:
   my-app:
     env_file:
-      - path: ./runtime.env
+      - path: ./.env.runtime
         required: true
 ```
 
-同时提交 `runtime.env.example`，但不能提交实际 `runtime.env`。需要按服务隔离变量时，使用成对的 `<service>.runtime.env` 与 `<service>.runtime.env.example`；校验脚本会把 Compose 文件和模板复制到受控临时目录完成模型验证，不会在真实栈目录生成运行时文件。运维脚本会在部署前要求实际文件存在。
+同时提交 `.env.runtime.example`，但不能提交实际 `.env.runtime`。需要按服务隔离变量时，使用成对的 `.env.<service>.runtime` 与 `.env.<service>.runtime.example`；校验脚本会把 Compose 文件和模板复制到受控临时目录完成模型验证，不会在真实栈目录生成运行时文件。运维脚本会在部署前要求实际文件存在。
 
 ## 可选的部署前迁移
 
-需要数据库迁移的应用以 `<app-id>-migrate` 声明一次性 Compose 服务。迁移服务必须使用与主服务完全相同的目标镜像、加入 `migration` profile、显式设置 `restart: "no"` 和迁移命令，并从必需的 `migration.runtime.env` 读取只在部署阶段使用的凭据。例如：
+需要数据库迁移的应用以 `<app-id>-migrate` 声明一次性 Compose 服务。迁移服务必须使用与主服务完全相同的目标镜像、加入 `migration` profile、显式设置 `restart: "no"` 和迁移命令，并从必需的 `.env.migration` 读取只在部署阶段使用的凭据。例如：
 
 ```yaml
 services:
@@ -114,13 +114,13 @@ services:
       - node
       - migrate/index.js
     env_file:
-      - path: ./migration.runtime.env
+      - path: ./.env.migration
         required: true
     networks:
       - postgres-net
 ```
 
-同时提交只含占位值的 `migration.runtime.env.example`。迁移服务不得设置 `container_name`、Traefik labels 或宿主机端口，也不得加入 `traefik-net`；它由 `ops.sh deploy` 在拉取目标镜像后以 `docker compose run --rm --no-deps` 调用，不作为常驻服务启动。
+同时提交只含占位值的 `.env.migration.example`。迁移服务不得设置 `container_name`、Traefik labels 或宿主机端口，也不得加入 `traefik-net`；它由 `ops.sh deploy` 在拉取目标镜像后以 `docker compose run --rm --no-deps` 调用，不作为常驻服务启动。
 
 `ops.sh` 只发现服务并在每次部署中调用迁移命令一次，不解析迁移文件或判断数据库版本。迁移程序必须用数据库内的历史记录和锁保证重复调用安全：没有待执行迁移时退出 `0`，失败时返回非零。失败会阻止新应用启动并保留当前镜像标签，但已经提交的数据库变更不会由 `ops.sh` 自动回滚；迁移必须保持旧应用可继续运行。
 
@@ -138,7 +138,7 @@ services:
   mysql:
     image: mysql:<固定版本>
     env_file:
-      - path: ./mysql.runtime.env
+      - path: ./.env.mysql.runtime
         required: true
     volumes:
       - mysql-data:/var/lib/mysql
@@ -158,7 +158,7 @@ volumes:
 
 应用通过 `mysql:3306` 访问数据库。MySQL 不加入 `traefik-net`，也不发布 `3306` 到宿主机。
 
-提交 `mysql.runtime.env.example` 作为字段模板；实际 `mysql.runtime.env` 只保存在服务器上，并由 Git 忽略。
+提交 `.env.mysql.runtime.example` 作为字段模板；实际 `.env.mysql.runtime` 只保存在服务器上，并由 Git 忽略。
 
 持久化服务还必须补充备份和恢复说明，禁止把 `docker compose down -v` 当作常规操作。
 

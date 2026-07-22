@@ -15,7 +15,7 @@
 在服务器受保护的 `config/env.json` 中填写：
 
 - `infrastructure/postgres/.env`
-- `infrastructure/postgres/runtime.env`
+- `infrastructure/postgres/.env.runtime`
 
 使用足够长的随机密码，例如：
 
@@ -39,7 +39,7 @@ docker network inspect postgres-net
 docker volume inspect postgres-data
 ```
 
-PostgreSQL 官方镜像只在空数据目录的首次初始化中读取 `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB` 和 `POSTGRES_INITDB_ARGS`。初始化后仅修改 `runtime.env` 不会修改数据库内的角色或密码；密码轮换必须在 PostgreSQL 中执行，再同步更新受保护的环境配置。
+PostgreSQL 官方镜像只在空数据目录的首次初始化中读取 `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB` 和 `POSTGRES_INITDB_ARGS`。初始化后仅修改 `.env.runtime` 不会修改数据库内的角色或密码；密码轮换必须在 PostgreSQL 中执行，再同步更新受保护的环境配置。
 
 不要删除或重新创建 `postgres-data` 来应用环境变量。禁止把 `docker compose down -v` 当作常规操作。
 
@@ -80,7 +80,7 @@ networks:
     name: postgres-net
 ```
 
-应用在内部网络中使用 `postgres:5432` 连接。连接串或拆分后的数据库凭据属于应用的 `runtime.env`，不得提交。初始连接池建议从每个应用实例 5 个连接开始；只有观察到连接压力后才引入 PgBouncer。
+应用在内部网络中使用 `postgres:5432` 连接。连接串或拆分后的数据库凭据属于应用的 `.env.runtime`，不得提交。初始连接池建议从每个应用实例 5 个连接开始；只有观察到连接压力后才引入 PgBouncer。
 
 ## 从本机数据库客户端连接
 

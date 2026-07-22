@@ -6,8 +6,22 @@
 - 原始 Compose 命令必须在目标栈目录执行。
 - 共享基础设施只允许手动部署，并在变更持久化服务前创建可恢复备份。
 - 应用部署必须指定明确镜像标签。
-- `.env` 保存 Compose 插值和当前部署标签，`runtime.env` 保存传入容器的变量。
+- `.env` 保存 Compose 插值和当前部署标签，`.env.runtime` 保存传入常驻容器的变量，`.env.migration` 保存只传入一次性迁移容器的变量。
 - 不手动编辑 Git 跟踪文件来修复服务器运行状态。
+
+## 环境文件命名升级
+
+已有服务器拉取包含新命名的版本后、执行下一次 `ops.sh` 前，先在确认目标文件不存在的前提下完成以下改名；内容与权限保持不变：
+
+| 旧文件 | 新文件 |
+| --- | --- |
+| `infrastructure/traefik/runtime.env` | `infrastructure/traefik/.env.runtime` |
+| `infrastructure/postgres/runtime.env` | `infrastructure/postgres/.env.runtime` |
+| `infrastructure/garage/runtime.env` | `infrastructure/garage/.env.runtime` |
+| `apps/codebuff-next/runtime.env` | `apps/codebuff-next/.env.runtime` |
+| `apps/codebuff-next/migration.runtime.env` | `apps/codebuff-next/.env.migration` |
+
+尚未创建的应用文件不需要改名，直接从新的 `.example` 模板创建。改名不会修改容器或数据库内的配置；下一次部署时 Compose 才会从新路径读取同一组值。
 
 ## 手动 Compose 操作
 
@@ -99,13 +113,13 @@ ${EDITOR:-vi} config/env.json
 bash scripts/ops.sh init-env config/env.json
 ```
 
-把所有由腾讯云 DNS 托管、需要预申请根域和通配符证书的域名写入 `traefik.domains` 数组。`DOMAIN_NAME` 必须是数组中的一项；初始化脚本会把数组展开为 `infrastructure/traefik/runtime.env` 中的 Traefik 索引环境变量，无需手工维护编号。
+把所有由腾讯云 DNS 托管、需要预申请根域和通配符证书的域名写入 `traefik.domains` 数组。`DOMAIN_NAME` 必须是数组中的一项；初始化脚本会把数组展开为 `infrastructure/traefik/.env.runtime` 中的 Traefik 索引环境变量，无需手工维护编号。
 
 所有应用 `.env` 中的 `IMAGE_REPOSITORY`、`APP_DOMAIN` 和初始 `IMAGE_TAG` 都必须在恢复 `repository_dispatch` 自动部署前配置完成；`ops.sh` 不再从公开仓库推断这些值。已有目标环境文件会被初始化脚本跳过而不会覆盖。
 
-如果需要部署共享 PostgreSQL，同时为 `infrastructure/postgres/.env` 和 `infrastructure/postgres/runtime.env` 填写与模板一致的值。数据库密码只保存在受保护的引导配置和服务器运行时文件中；初始化完成后删除 `config/env.json`，或者把它作为密钥备份保护。
+如果需要部署共享 PostgreSQL，同时为 `infrastructure/postgres/.env` 和 `infrastructure/postgres/.env.runtime` 填写与模板一致的值。数据库密码只保存在受保护的引导配置和服务器运行时文件中；初始化完成后删除 `config/env.json`，或者把它作为密钥备份保护。
 
-如果需要部署共享 Garage，同时填写 `infrastructure/garage/.env` 和 `infrastructure/garage/runtime.env`。公开媒体域名必须解析到服务器；RPC 密钥和 S3 初始化凭据只保存在运行时文件和受保护的备份中。生成格式、单节点风险和首次验证步骤见 [Garage 对象存储运维](garage.md)。
+如果需要部署共享 Garage，同时填写 `infrastructure/garage/.env` 和 `infrastructure/garage/.env.runtime`。公开媒体域名必须解析到服务器；RPC 密钥和 S3 初始化凭据只保存在运行时文件和受保护的备份中。生成格式、单节点风险和首次验证步骤见 [Garage 对象存储运维](garage.md)。
 
 保留现有 ACME 账户和证书状态，避免切换时重新申请证书：
 
@@ -121,12 +135,12 @@ fi
 
 | 旧变量 | 新位置 |
 | --- | --- |
-| 需要预申请证书的根域名 | `config/env.json` 的 `traefik.domains` 数组；初始化后展开到 `infrastructure/traefik/runtime.env` |
+| 需要预申请证书的根域名 | `config/env.json` 的 `traefik.domains` 数组；初始化后展开到 `infrastructure/traefik/.env.runtime` |
 | `DOMAIN_NAME` | `infrastructure/traefik/.env` |
 | `ACME_EMAIL` | `infrastructure/traefik/.env` |
 | `DASHBOARD_USERS` | `infrastructure/traefik/.env` |
-| `TENCENTCLOUD_SECRET_ID` | `infrastructure/traefik/runtime.env` |
-| `TENCENTCLOUD_SECRET_KEY` | `infrastructure/traefik/runtime.env` |
+| `TENCENTCLOUD_SECRET_ID` | `infrastructure/traefik/.env.runtime` |
+| `TENCENTCLOUD_SECRET_KEY` | `infrastructure/traefik/.env.runtime` |
 | 应用镜像仓库 | 对应应用 `.env` 的 `IMAGE_REPOSITORY` |
 | 应用访问域名 | 对应应用 `.env` 的 `APP_DOMAIN` |
 | `<APP>_VERSION` | 对应应用 `.env` 的 `IMAGE_TAG`；后续由 `ops.sh deploy` 更新 |

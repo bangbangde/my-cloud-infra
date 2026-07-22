@@ -78,7 +78,7 @@ validate_runtime_env_templates() {
       || die "Missing ${directory#"$ROOT_DIR"/}/$runtime_file.example"
   done < <(
     sed -nE \
-      's|^[[:space:]]*-[[:space:]]*path:[[:space:]]+\./([^[:space:]#]*runtime\.env)[[:space:]]*$|\1|p' \
+      's|^[[:space:]]*-[[:space:]]*path:[[:space:]]+\./(\.env\.[^[:space:]#]+)[[:space:]]*$|\1|p' \
       "$directory/compose.yaml"
   )
 }
@@ -92,7 +92,7 @@ prepare_validation_stack() {
   VALIDATION_DIRS+=("$VALIDATION_DIR")
   cp -- "$source_directory/compose.yaml" "$source_directory/.env.example" "$VALIDATION_DIR/"
 
-  for example in "$source_directory"/runtime.env.example "$source_directory"/*.runtime.env.example; do
+  for example in "$source_directory"/.env.*.example; do
     [[ -f "$example" ]] || continue
     name="$(basename -- "$example")"
     cp -- "$example" "$VALIDATION_DIR/$name"
@@ -106,7 +106,8 @@ docker compose version >/dev/null 2>&1 || die "Docker Compose is required."
 
 tracked_sensitive_files="$(
   git -C "$ROOT_DIR" ls-files \
-    | grep -E '(^|/)(\.env|runtime\.env|[^/]+\.runtime\.env|acme\.json|config/env\.json)$' \
+    | grep -E '(^|/)(\.env($|\.)|acme\.json$|config/env\.json$)' \
+    | grep -Ev '\.example$' \
     || true
 )"
 [[ -z "$tracked_sensitive_files" ]] \
@@ -120,7 +121,7 @@ done
 require_file "$ROOT_DIR/config/env.example.json"
 
 printf '==> Validate Traefik Compose model\n'
-for file in compose.yaml .env.example runtime.env.example static.yaml dynamic/tls.yaml; do
+for file in compose.yaml .env.example .env.runtime.example static.yaml dynamic/tls.yaml; do
   require_file "$TRAEFIK_DIR/$file"
 done
 validate_runtime_env_templates "$TRAEFIK_DIR"
@@ -171,7 +172,7 @@ for directory in "$INFRASTRUCTURE_DIR"/*; do
 
   if [[ "$infrastructure_service" == "postgres" ]]; then
     postgres_found=true
-    require_file "$directory/runtime.env.example"
+    require_file "$directory/.env.runtime.example"
     require_file "$ROOT_DIR/docs/postgres.md"
 
     grep -Eq '^    image: postgres:[0-9]+\.[0-9]+-bookworm@sha256:[0-9a-f]{64}$' <<<"$infrastructure_model" \
@@ -199,12 +200,12 @@ for directory in "$INFRASTRUCTURE_DIR"/*; do
     fi
 
     for variable in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB POSTGRES_INITDB_ARGS; do
-      grep -Eq "^${variable}=" "$directory/runtime.env.example" \
-        || die "infrastructure/postgres/runtime.env.example must define $variable"
+      grep -Eq "^${variable}=" "$directory/.env.runtime.example" \
+        || die "infrastructure/postgres/.env.runtime.example must define $variable"
     done
   elif [[ "$infrastructure_service" == "garage" ]]; then
     garage_found=true
-    require_file "$directory/runtime.env.example"
+    require_file "$directory/.env.runtime.example"
     require_file "$directory/garage.toml"
     require_file "$ROOT_DIR/docs/garage.md"
 
@@ -229,8 +230,8 @@ for directory in "$INFRASTRUCTURE_DIR"/*; do
     fi
 
     for variable in GARAGE_RPC_SECRET GARAGE_DEFAULT_ACCESS_KEY GARAGE_DEFAULT_SECRET_KEY; do
-      grep -Eq "^${variable}=" "$directory/runtime.env.example" \
-        || die "infrastructure/garage/runtime.env.example must define $variable"
+      grep -Eq "^${variable}=" "$directory/.env.runtime.example" \
+        || die "infrastructure/garage/.env.runtime.example must define $variable"
     done
     for variable in \
       GARAGE_PUBLIC_DOMAIN \
@@ -328,11 +329,11 @@ for directory in "$APPS_DIR"/*; do
       | grep -Fx '      - no-new-privileges:true' >/dev/null \
       || die "apps/$app migration service must enable no-new-privileges"
     grep -A3 -Fx '    env_file:' <<<"$migration_source_block" \
-      | grep -Fx '      - path: ./migration.runtime.env' >/dev/null \
-      || die "apps/$app migration service must read migration.runtime.env"
+      | grep -Fx '      - path: ./.env.migration' >/dev/null \
+      || die "apps/$app migration service must read .env.migration"
     grep -A3 -Fx '    env_file:' <<<"$migration_source_block" \
       | grep -Fx '        required: true' >/dev/null \
-      || die "apps/$app migration.runtime.env must be required"
+      || die "apps/$app .env.migration must be required"
 
     if grep -Eq '^    (container_name|labels|ports):' <<<"$migration_service_block"; then
       die "apps/$app migration service must not set container_name, labels or host ports"

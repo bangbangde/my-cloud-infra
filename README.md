@@ -27,18 +27,23 @@ my-cloud-infra/
 │   │   ├── dynamic/
 │   │   ├── state/acme/
 │   │   ├── .env.example
-│   │   └── runtime.env.example
+│   │   └── .env.runtime.example
 │   ├── postgres/
 │   │   ├── compose.yaml
 │   │   ├── .env.example
-│   │   └── runtime.env.example
+│   │   └── .env.runtime.example
 │   └── garage/
 │       ├── compose.yaml
 │       ├── garage.toml
 │       ├── .env.example
-│       └── runtime.env.example
+│       └── .env.runtime.example
 ├── apps/
-│   └── <app-id>/
+│   ├── codebuff-next/
+│   │   ├── compose.yaml
+│   │   ├── .env.example
+│   │   ├── .env.runtime.example
+│   │   └── .env.migration.example
+│   └── my-pages/
 │       ├── compose.yaml
 │       └── .env.example
 ├── config/
@@ -69,8 +74,9 @@ my-cloud-infra/
 | --- | --- | --- |
 | `.env` | 当前环境的域名、镜像仓库等 Compose 插值，以及当前部署标签 | 忽略 |
 | `.env.example` | `.env` 字段模板 | 跟踪 |
-| `runtime.env` / `<service>.runtime.env` | 传入容器的运行时变量或密钥 | 忽略 |
-| 对应的 `*.env.example` | 运行时变量字段模板 | 跟踪 |
+| `.env.runtime` / `.env.<service>.runtime` | 传入常驻容器的运行时变量或密钥 | 忽略 |
+| `.env.migration` | 只传入一次性迁移容器的变量或密钥 | 忽略 |
+| 对应的 `.env.*.example` | 运行时变量字段模板 | 跟踪 |
 
 `.env` 不会因为存在就自动传入容器。容器运行时变量必须通过 Compose 的 `env_file` 或 `environment` 显式声明。运行时文件在 Compose 中设置 `required: true`，缺失时手动操作也会立即失败。
 
@@ -85,17 +91,17 @@ ${EDITOR:-vi} config/env.json
 bash scripts/ops.sh init-env config/env.json
 ```
 
-`config/env.json` 已被 Git 忽略。把示例中的 `apps/<app-id>/.env` 替换或复制为 `apps/` 下的每个实际目录；如果某个栈还有 `runtime.env.example` 或 `<service>.runtime.env.example`，也要加入对应的目标文件。`files` 中的目标文件和变量名必须与仓库模板完全一致，环境变量值都必须是字符串。`traefik.domains` 是唯一的数组字段，填写所有需要自动申请根域和通配符证书的域名；`infrastructure/traefik/.env` 中的 `DOMAIN_NAME` 必须是该数组中的一项。JSON 不支持注释，实际说明保留在本节和示例文件旁的公开文档中，避免把说明文字与密钥混在同一份文件。
+`config/env.json` 已被 Git 忽略。示例已经包含当前全部栈的目标文件，包括 `codebuff-next` 的 `.env`、运行凭据和迁移凭据；新增应用时，要为它的每个 `.env.example` 或 `.env.*.example` 模板增加对应目标文件。`files` 中的目标文件和变量名必须与仓库模板完全一致，环境变量值都必须是字符串。`traefik.domains` 是唯一的数组字段，填写所有需要自动申请根域和通配符证书的域名；`infrastructure/traefik/.env` 中的 `DOMAIN_NAME` 必须是该数组中的一项。JSON 不支持注释，实际说明保留在本节和示例文件旁的公开文档中，避免把说明文字与密钥混在同一份文件。
 
 脚本会先校验整份 JSON，再以 `0600` 权限创建缺失文件。已有文件只会报告 `SKIP`，不会被覆盖，因此也可以在以后新增应用时再次运行。初始化完成后，`config/env.json` 只是敏感的引导输入；应删除它或存放在受保护的备份中，实际运维仍以各栈同目录的环境文件为准。
 
 如果服务器曾创建旧的 `config/env.yml`，Git 不会迁移这个被忽略的本机文件。已经生成的各栈 `.env` 不受影响；只有再次初始化时才需要把真实值转入 `config/env.json`，确认后删除旧 YAML，避免留下两份密钥清单。
 
-Traefik 的 `.env` 包含 Dashboard 所用根域名、ACME 邮箱和认证信息，`runtime.env` 包含腾讯云 DNS API 凭据，以及初始化脚本根据 `traefik.domains` 生成的 Traefik TLS 域名变量。Dashboard bcrypt 值使用 `htpasswd -nB admin` 生成；在 JSON 字符串中保留原始单个 `$`，不要执行旧版文档中的美元符号双写转换。
+Traefik 的 `.env` 包含 Dashboard 所用根域名、ACME 邮箱和认证信息，`.env.runtime` 包含腾讯云 DNS API 凭据，以及初始化脚本根据 `traefik.domains` 生成的 Traefik TLS 域名变量。Dashboard bcrypt 值使用 `htpasswd -nB admin` 生成；在 JSON 字符串中保留原始单个 `$`，不要执行旧版文档中的美元符号双写转换。
 
-PostgreSQL 的 `.env` 保存显式连接上限，`runtime.env` 保存首次初始化所需的管理员角色、密码、默认数据库和认证参数。官方镜像只在空数据目录首次启动时使用这些初始化变量；之后仅修改环境文件不会轮换数据库内的密码。
+PostgreSQL 的 `.env` 保存显式连接上限，`.env.runtime` 保存首次初始化所需的管理员角色、密码、默认数据库和认证参数。官方镜像只在空数据目录首次启动时使用这些初始化变量；之后仅修改环境文件不会轮换数据库内的密码。
 
-Garage 的 `.env` 保存公开媒体域名和默认公开 Bucket，`runtime.env` 保存 RPC 密钥和初始化 S3 凭据。初始化凭据只用于引导与运维；应用接入时应创建独立 Access Key。
+Garage 的 `.env` 保存公开媒体域名和默认公开 Bucket，`.env.runtime` 保存 RPC 密钥和初始化 S3 凭据。初始化凭据只用于引导与运维；应用接入时应创建独立 Access Key。
 
 每个应用的 `.env` 至少包含 `IMAGE_REPOSITORY`、`APP_DOMAIN` 和 `IMAGE_TAG`。`scripts/ops.sh deploy` 只更新 `IMAGE_TAG`，不会覆盖其他环境级配置；实际域名和镜像命名空间不进入公开仓库。
 
@@ -166,7 +172,7 @@ bash scripts/ops.sh check garage
 }
 ```
 
-初始化脚本会为每一项生成 Traefik 支持的索引环境变量，使证书解析器分别申请根域名和对应的通配符域名，例如 `example.com` 与 `*.example.com`。这些生成变量保存在忽略的 `infrastructure/traefik/runtime.env` 中，不需要手工展开数组。腾讯云凭据必须有权管理数组中每个域名所属的 DNS Zone。
+初始化脚本会为每一项生成 Traefik 支持的索引环境变量，使证书解析器分别申请根域名和对应的通配符域名，例如 `example.com` 与 `*.example.com`。这些生成变量保存在忽略的 `infrastructure/traefik/.env.runtime` 中，不需要手工展开数组。腾讯云凭据必须有权管理数组中每个域名所属的 DNS Zone。
 
 `DOMAIN_NAME` 必须选择数组中的一个根域名，仅用于 Dashboard 的 `traefik.<DOMAIN_NAME>` 地址。每个应用目录仍拥有自己的 `APP_DOMAIN`；应用 Router 会从 `Host(...)` 规则提取具体域名，且可直接复用相应的通配符证书。
 
@@ -256,7 +262,7 @@ Pull Request 和 main push 会验证：
 
 仓库只提交可公开的配置结构和示例值。以下内容必须保留在服务器、GitHub Secrets 或其他密钥管理系统中：
 
-- 实际 `.env`、`runtime.env` 和 `*.runtime.env`
+- 实际 `.env`、`.env.runtime`、`.env.migration` 和 `.env.<service>.runtime`
 - `acme.json`、SSH 私钥、API Token、云厂商凭据和数据库密码
 - 不希望公开的服务器地址、实际业务域名和私有镜像命名空间
 

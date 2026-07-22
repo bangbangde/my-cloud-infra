@@ -141,7 +141,7 @@ require_runtime_envs() {
   local example
   local actual
 
-  for example in "$directory"/runtime.env.example "$directory"/*.runtime.env.example; do
+  for example in "$directory"/.env.*.example; do
     [[ -f "$example" ]] || continue
     actual="${example%.example}"
     [[ -f "$actual" ]] || die "Missing $actual; create it from $(basename -- "$example")."
