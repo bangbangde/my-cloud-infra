@@ -9,7 +9,6 @@ APPS_DIR="$ROOT_DIR/apps"
 LOCK_FILE="$ROOT_DIR/.ops.lock"
 
 TEMP_ENV=""
-REGISTRY_LOGGED_IN=false
 
 usage() {
   cat <<'EOF'
@@ -40,10 +39,6 @@ cleanup() {
 
   if [[ -n "$TEMP_ENV" && -f "$TEMP_ENV" ]]; then
     rm -f -- "$TEMP_ENV"
-  fi
-
-  if [[ "$REGISTRY_LOGGED_IN" == true ]]; then
-    docker logout ghcr.io >/dev/null 2>&1 || true
   fi
 
   trap - EXIT
@@ -147,16 +142,6 @@ require_runtime_envs() {
     actual="${example%.example}"
     [[ -f "$actual" ]] || die "Missing $actual; create it from $(basename -- "$example")."
   done
-}
-
-registry_login() {
-  if [[ -z "${GHCR_TOKEN:-}" ]]; then
-    return
-  fi
-
-  [[ -n "${GHCR_USERNAME:-}" ]] || die "GHCR_USERNAME is required when GHCR_TOKEN is set."
-  printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
-  REGISTRY_LOGGED_IN=true
 }
 
 report_health_contract() {
@@ -287,7 +272,6 @@ deploy_app() {
   current_env="$directory/.env"
 
   acquire_lock
-  registry_login
 
   [[ "$(grep -Ec '^IMAGE_TAG=' "$current_env" || true)" -eq 1 ]] \
     || die "$current_env must contain exactly one IMAGE_TAG entry."

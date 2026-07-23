@@ -85,15 +85,13 @@ jobs:
         # v1.2.5
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2
         env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME || github.actor }}
           IMAGE_TAG: ${{ steps.request.outputs.image_tag }}
           SERVICE: ${{ steps.request.outputs.service }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: GHCR_TOKEN,GHCR_USERNAME,IMAGE_TAG,SERVICE
+          envs: IMAGE_TAG,SERVICE
           command_timeout: 20m
           script: |
             set -Eeuo pipefail

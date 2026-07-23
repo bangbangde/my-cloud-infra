@@ -9,6 +9,35 @@
 - `.env` 保存 Compose 插值和当前部署标签，`.env.runtime` 保存传入常驻容器的变量，`.env.migration` 保存只传入一次性迁移容器的变量。
 - 不手动编辑 Git 跟踪文件来修复服务器运行状态。
 
+## 私有镜像仓库认证
+
+GitHub Actions 只通过 SSH 传递部署目标和镜像标签，不接收或转发镜像仓库 Token。`docker compose pull` 使用服务器上部署用户已有的 Docker 凭证，因此自动部署和手动部署具有相同的认证环境。
+
+首次部署私有镜像前，以 GitHub Actions 中 `SERVER_USER` 对应的 Linux 用户登录服务器，并为镜像实际使用的每个 Registry 登录一次。以 GHCR 为例：
+
+```bash
+read -rsp 'GHCR read-only token: ' REGISTRY_TOKEN
+printf '\n'
+printf '%s' "$REGISTRY_TOKEN" |
+  docker login ghcr.io --username '<github-user-or-machine-user>' --password-stdin
+unset REGISTRY_TOKEN
+
+docker pull ghcr.io/<owner>/<image>:<known-tag>
+```
+
+GHCR Token 只授予拉取所需的 `read:packages` 权限；优先使用权限受限的专用账号。新增其他镜像源时，使用该 Registry 提供的只读凭证执行对应的 `docker login <registry-host>`。Docker 会按 Registry 主机名分别保存和选择凭证，不需要修改 `ops.sh`。
+
+必须保持执行用户一致：不要在普通部署用户登录后使用 `sudo docker pull`，否则 Docker 会读取 root 用户的凭证目录。默认 `~/.docker/config.json` 中的认证信息不是加密存储；至少限制目录和文件权限：
+
+```bash
+chmod 700 ~/.docker
+chmod 600 ~/.docker/config.json
+```
+
+服务器支持 Docker credential helper 时，优先使用 `credsStore` 或按 Registry 配置 `credHelpers`。轮换 Token 时重新执行 `docker login` 并用已知镜像标签验证拉取；撤销 Registry 访问时执行 `docker logout <registry-host>`。不要把 Token 写入仓库、`.env`、命令参数或 GitHub Actions Secrets。
+
+从旧版临时 GHCR 登录流程升级时，先在服务器部署用户下完成上述持久登录，再运行首次新版部署。旧版 `ops.sh` 退出时会执行 `docker logout ghcr.io`，因此不能先用旧脚本部署再期望凭证保留。
+
 ## 环境文件命名升级
 
 已有服务器拉取包含新命名的版本后、执行下一次 `ops.sh` 前，先在确认目标文件不存在的前提下完成以下改名；内容与权限保持不变：
