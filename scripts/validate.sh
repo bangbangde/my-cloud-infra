@@ -221,8 +221,14 @@ for directory in "$INFRASTRUCTURE_DIR"/*; do
       | grep -F '3902' >/dev/null \
       || die "Garage public router must use only the read-only web endpoint on port 3902"
 
-    if grep -Eq '^    (container_name|ports):' <<<"$infrastructure_model"; then
-      die "Garage must not set container_name or publish host ports"
+    if grep -Eq '^    container_name:' <<<"$infrastructure_model"; then
+      die "Garage must not set container_name"
+    fi
+    if [[ "$(grep -Fc '      host_ip: 127.0.0.1' <<<"$infrastructure_model" || true)" -ne 1 ]] \
+      || [[ "$(grep -Fc '      target: 3900' <<<"$infrastructure_model" || true)" -ne 1 ]] \
+      || [[ "$(grep -Fc '      published: "3900"' <<<"$infrastructure_model" || true)" -ne 1 ]] \
+      || [[ "$(grep -Fc '      published:' <<<"$infrastructure_model" || true)" -ne 1 ]]; then
+      die "Garage must publish only S3 port 3900 on the host loopback address"
     fi
     if grep -F 'traefik.http.services.garage-web.loadbalancer.server.port' <<<"$infrastructure_model" \
       | grep -F '3900' >/dev/null; then

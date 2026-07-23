@@ -194,6 +194,8 @@ networks:
 
 每个应用使用独立 Access Key，按 Bucket 授予最小读写权限。初始化 Key 只用于引导和运维。应用数据库保存 Bucket、Object Key、MIME、大小和校验和，不保存文件二进制或固定公网 URL。
 
+Garage 同时把 S3 API 绑定到宿主机 `127.0.0.1:3900`，只供运维人员通过 SSH 隧道连接桌面客户端；该入口不改变应用必须通过 `garage-net` 接入的约定，也不构成公网 S3 服务。
+
 公开对象由 Traefik 路由到 Garage 的 3902 Web endpoint。当前不对公网路由 3900 S3 API，因此浏览器预签名直传不属于默认契约；如需启用，必须单独评审公网域名、CORS、有效期、文件大小、类型校验和滥用防护。
 
 Garage 的网络、Bucket/Key 创建、容量边界、备份和恢复以 [Garage 对象存储运维](garage.md) 为准。应用发布和回退不得删除 `garage-meta`、`garage-data` 或重建共享 Bucket。

@@ -20,6 +20,8 @@ services:
       - ./garage.toml:/etc/garage.toml:ro
       - garage-meta:/var/lib/garage/meta
       - garage-data:/var/lib/garage/data
+    ports:
+      - "127.0.0.1:3900:3900"
     networks:
       - garage-net
       - traefik-net
