@@ -28,7 +28,7 @@ die() {
   exit 1
 }
 
-compose_config() {
+compose_stack() {
   local directory=$1
   local env_file=$2
   shift 2
@@ -37,24 +37,10 @@ compose_config() {
     --project-directory "$directory" \
     --env-file "$env_file" \
     -f "$directory/compose.yaml" \
-    config "$@"
+    "$@"
 }
 
-compose_profile_config() {
-  local directory=$1
-  local env_file=$2
-  local profile=$3
-  shift 3
-
-  docker compose \
-    --project-directory "$directory" \
-    --env-file "$env_file" \
-    -f "$directory/compose.yaml" \
-    --profile "$profile" \
-    config "$@"
-}
-
-compose_service_block() {
+compose_model_block() {
   local model=$1
   local service=$2
 
@@ -67,6 +53,29 @@ compose_service_block() {
 
 require_file() {
   [[ -f "$1" ]] || die "Missing ${1#"$ROOT_DIR"/}"
+}
+
+require_digest_image() {
+  local service_block=$1
+  local repository=$2
+  local description=$3
+
+  grep -Eq "^    image: ${repository}:[^[:space:]@]+@sha256:[0-9a-f]{64}$" \
+    <<<"$service_block" \
+    || die "$description image must use a tag and digest"
+}
+
+require_loopback_port() {
+  local service_block=$1
+  local port=$2
+  local description=$3
+
+  if [[ "$(grep -Fc '      host_ip: 127.0.0.1' <<<"$service_block" || true)" -ne 1 ]] \
+    || [[ "$(grep -Fc "      target: $port" <<<"$service_block" || true)" -ne 1 ]] \
+    || [[ "$(grep -Fc "      published: \"$port\"" <<<"$service_block" || true)" -ne 1 ]] \
+    || [[ "$(grep -Fc '      published:' <<<"$service_block" || true)" -ne 1 ]]; then
+    die "$description must publish only port $port on the host loopback address"
+  fi
 }
 
 validate_runtime_env_templates() {
@@ -118,8 +127,6 @@ for script in "$ROOT_DIR"/scripts/*.sh; do
   bash -n "$script"
 done
 
-require_file "$ROOT_DIR/config/env.example.json"
-
 printf '==> Validate Traefik Compose model\n'
 for file in compose.yaml .env.example .env.runtime.example static.yaml dynamic/tls.yaml; do
   require_file "$TRAEFIK_DIR/$file"
@@ -128,25 +135,39 @@ validate_runtime_env_templates "$TRAEFIK_DIR"
 prepare_validation_stack "$TRAEFIK_DIR"
 traefik_validation_dir=$VALIDATION_DIR
 
-traefik_model="$(compose_config "$traefik_validation_dir" "$traefik_validation_dir/.env.example")"
-traefik_services="$(compose_config "$traefik_validation_dir" "$traefik_validation_dir/.env.example" --services)"
+traefik_model="$(compose_stack "$traefik_validation_dir" "$traefik_validation_dir/.env.example" config)"
+traefik_services="$(
+  compose_stack "$traefik_validation_dir" "$traefik_validation_dir/.env.example" config --services
+)"
 grep -Fx traefik <<<"$traefik_services" >/dev/null || die "Traefik service is required"
 grep -Fx socket-proxy <<<"$traefik_services" >/dev/null || die "socket-proxy service is required"
-grep -Eq '^    image: traefik:v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$traefik_model" \
+
+traefik_service_block="$(compose_model_block "$traefik_model" traefik)"
+socket_proxy_service_block="$(compose_model_block "$traefik_model" socket-proxy)"
+docker_api_network_block="$(compose_model_block "$traefik_model" docker-api)"
+
+grep -Eq '^    image: traefik:v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$traefik_service_block" \
   || die "Traefik image must use an exact patch version"
-grep -Eq '^    image: ghcr\.io/tecnativa/docker-socket-proxy:v[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$' <<<"$traefik_model" \
-  || die "Socket proxy image must use a version and digest"
-[[ "$(grep -Fc '        target: /var/run/docker.sock' <<<"$traefik_model" || true)" -eq 1 ]] \
-  || die "Docker socket must be mounted exactly once"
-grep -F '      POST: "0"' <<<"$traefik_model" >/dev/null \
+require_digest_image \
+  "$socket_proxy_service_block" \
+  'ghcr\.io/tecnativa/docker-socket-proxy' \
+  "Socket proxy"
+[[ "$(grep -Fc '        target: /var/run/docker.sock' <<<"$socket_proxy_service_block" || true)" -eq 1 ]] \
+  || die "Docker socket must be mounted exactly once on socket-proxy"
+if grep -F '/var/run/docker.sock' <<<"$traefik_service_block" >/dev/null; then
+  die "Traefik must not mount the Docker socket directly"
+fi
+grep -F '      POST: "0"' <<<"$socket_proxy_service_block" >/dev/null \
   || die "Socket proxy must reject Docker API write requests"
-grep -A3 -Fx '  docker-api:' <<<"$traefik_model" | grep -Fx '    internal: true' >/dev/null \
+grep -Fx '    internal: true' <<<"$docker_api_network_block" >/dev/null \
   || die "Docker API network must be internal"
+grep -Eq '^      docker-api:' <<<"$traefik_service_block" \
+  || die "Traefik must attach to docker-api"
+grep -Eq '^      docker-api:' <<<"$socket_proxy_service_block" \
+  || die "Socket proxy must attach to docker-api"
 
 printf '==> Validate shared infrastructure Compose models\n'
 infrastructure_count=0
-postgres_found=false
-garage_found=false
 for directory in "$INFRASTRUCTURE_DIR"/*; do
   [[ -d "$directory" ]] || continue
   infrastructure_service="$(basename -- "$directory")"
@@ -162,109 +183,78 @@ for directory in "$INFRASTRUCTURE_DIR"/*; do
   prepare_validation_stack "$directory"
   infrastructure_validation_dir=$VALIDATION_DIR
 
-  infrastructure_model="$(compose_config "$infrastructure_validation_dir" "$infrastructure_validation_dir/.env.example")"
-  infrastructure_services="$(compose_config "$infrastructure_validation_dir" "$infrastructure_validation_dir/.env.example" --services)"
+  infrastructure_model="$(
+    compose_stack \
+      "$infrastructure_validation_dir" \
+      "$infrastructure_validation_dir/.env.example" \
+      config
+  )"
+  infrastructure_services="$(
+    compose_stack \
+      "$infrastructure_validation_dir" \
+      "$infrastructure_validation_dir/.env.example" \
+      config \
+      --services
+  )"
 
   grep -Fx "$infrastructure_service" <<<"$infrastructure_services" >/dev/null \
     || die "Primary service in infrastructure/$infrastructure_service/compose.yaml must be named $infrastructure_service"
-  grep -Fx "name: $infrastructure_service" <<<"$infrastructure_model" >/dev/null \
-    || die "Compose project name must resolve to $infrastructure_service"
+
+  infrastructure_service_block="$(
+    compose_model_block "$infrastructure_model" "$infrastructure_service"
+  )"
 
   if [[ "$infrastructure_service" == "postgres" ]]; then
-    postgres_found=true
-    require_file "$directory/.env.runtime.example"
-    require_file "$ROOT_DIR/docs/postgres.md"
+    postgres_network_block="$(compose_model_block "$infrastructure_model" postgres-net)"
 
-    grep -Eq '^    image: postgres:[0-9]+\.[0-9]+-bookworm@sha256:[0-9a-f]{64}$' <<<"$infrastructure_model" \
-      || die "PostgreSQL image must use an exact patch version, Debian variant and digest"
-    [[ "$(grep -Fc '        target: /var/lib/postgresql' <<<"$infrastructure_model" || true)" -eq 1 ]] \
+    require_digest_image "$infrastructure_service_block" postgres "PostgreSQL"
+    [[ "$(grep -Fc '        target: /var/lib/postgresql' <<<"$infrastructure_service_block" || true)" -eq 1 ]] \
       || die "PostgreSQL 18 data volume must be mounted at /var/lib/postgresql"
-    grep -A4 -Fx '  postgres-net:' <<<"$infrastructure_model" | grep -Fx '    name: postgres-net' >/dev/null \
+    grep -Fx '    name: postgres-net' <<<"$postgres_network_block" >/dev/null \
       || die "PostgreSQL network must use the stable postgres-net name"
-    if grep -A4 -Fx '  postgres-net:' <<<"$infrastructure_model" | grep -Fx '    internal: true' >/dev/null; then
+    if grep -Fx '    internal: true' <<<"$postgres_network_block" >/dev/null; then
       die "PostgreSQL network must allow the host loopback port mapping"
     fi
-    grep -F 'max_connections=' <<<"$infrastructure_model" >/dev/null \
-      || die "PostgreSQL max_connections must be explicit"
-
-    if grep -Eq '^    container_name:' <<<"$infrastructure_model"; then
-      die "PostgreSQL must not set container_name"
-    fi
-    if [[ "$(grep -Fc '      host_ip: 127.0.0.1' <<<"$infrastructure_model" || true)" -ne 1 ]] \
-      || [[ "$(grep -Fc '      target: 5432' <<<"$infrastructure_model" || true)" -ne 1 ]] \
-      || [[ "$(grep -Fc '      published: "5432"' <<<"$infrastructure_model" || true)" -ne 1 ]]; then
-      die "PostgreSQL must publish port 5432 only on the host loopback address"
-    fi
-    if grep -F 'traefik-net' <<<"$infrastructure_model" >/dev/null; then
+    require_loopback_port "$infrastructure_service_block" 5432 "PostgreSQL"
+    if grep -Eq '^      traefik-net:' <<<"$infrastructure_service_block"; then
       die "PostgreSQL must not attach to traefik-net"
     fi
-
-    for variable in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB POSTGRES_INITDB_ARGS; do
-      grep -Eq "^${variable}=" "$directory/.env.runtime.example" \
-        || die "infrastructure/postgres/.env.runtime.example must define $variable"
-    done
   elif [[ "$infrastructure_service" == "garage" ]]; then
-    garage_found=true
-    require_file "$directory/.env.runtime.example"
     require_file "$directory/garage.toml"
-    require_file "$ROOT_DIR/docs/garage.md"
+    garage_network_block="$(compose_model_block "$infrastructure_model" garage-net)"
 
-    grep -Eq '^    image: dxflrs/garage:v[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$' <<<"$infrastructure_model" \
-      || die "Garage image must use an exact version and digest"
-    [[ "$(grep -Fc '        target: /var/lib/garage/meta' <<<"$infrastructure_model" || true)" -eq 1 ]] \
+    require_digest_image "$infrastructure_service_block" dxflrs/garage "Garage"
+    [[ "$(grep -Fc '        target: /var/lib/garage/meta' <<<"$infrastructure_service_block" || true)" -eq 1 ]] \
       || die "Garage metadata volume must be mounted at /var/lib/garage/meta"
-    [[ "$(grep -Fc '        target: /var/lib/garage/data' <<<"$infrastructure_model" || true)" -eq 1 ]] \
+    [[ "$(grep -Fc '        target: /var/lib/garage/data' <<<"$infrastructure_service_block" || true)" -eq 1 ]] \
       || die "Garage data volume must be mounted at /var/lib/garage/data"
-    grep -A4 -Fx '  garage-net:' <<<"$infrastructure_model" | grep -Fx '    internal: true' >/dev/null \
+    grep -Fx '    internal: true' <<<"$garage_network_block" >/dev/null \
       || die "Garage application network must be internal"
-    grep -F 'traefik.http.services.garage-web.loadbalancer.server.port' <<<"$infrastructure_model" \
-      | grep -F '3902' >/dev/null \
-      || die "Garage public router must use only the read-only web endpoint on port 3902"
+    grep -Eq '^      garage-net:' <<<"$infrastructure_service_block" \
+      || die "Garage must attach to garage-net"
+    grep -Eq '^      traefik-net:' <<<"$infrastructure_service_block" \
+      || die "Garage must attach to traefik-net for its read-only website"
+    require_loopback_port "$infrastructure_service_block" 3900 "Garage"
 
-    if grep -Eq '^    container_name:' <<<"$infrastructure_model"; then
-      die "Garage must not set container_name"
+    garage_traefik_port_labels="$(
+      grep -F '.loadbalancer.server.port' <<<"$infrastructure_service_block" \
+        | grep -F 'traefik.http.services.' \
+        || true
+    )"
+    [[ -n "$garage_traefik_port_labels" ]] \
+      || die "Garage must declare a Traefik service for the read-only website"
+    if grep -Fv '3902' <<<"$garage_traefik_port_labels" >/dev/null; then
+      die "Garage Traefik service ports must target only the read-only web endpoint 3902"
     fi
-    if [[ "$(grep -Fc '      host_ip: 127.0.0.1' <<<"$infrastructure_model" || true)" -ne 1 ]] \
-      || [[ "$(grep -Fc '      target: 3900' <<<"$infrastructure_model" || true)" -ne 1 ]] \
-      || [[ "$(grep -Fc '      published: "3900"' <<<"$infrastructure_model" || true)" -ne 1 ]] \
-      || [[ "$(grep -Fc '      published:' <<<"$infrastructure_model" || true)" -ne 1 ]]; then
-      die "Garage must publish only S3 port 3900 on the host loopback address"
+    if grep -F 'traefik.' <<<"$infrastructure_service_block" | grep -F '3900' >/dev/null; then
+      die "Garage Traefik labels must not reference the S3 API port 3900"
     fi
-    if grep -F 'traefik.http.services.garage-web.loadbalancer.server.port' <<<"$infrastructure_model" \
-      | grep -F '3900' >/dev/null; then
-      die "Garage S3 API must not be routed publicly"
-    fi
-
-    for variable in GARAGE_RPC_SECRET GARAGE_DEFAULT_ACCESS_KEY GARAGE_DEFAULT_SECRET_KEY; do
-      grep -Eq "^${variable}=" "$directory/.env.runtime.example" \
-        || die "infrastructure/garage/.env.runtime.example must define $variable"
-    done
-    for variable in \
-      GARAGE_PUBLIC_DOMAIN \
-      GARAGE_PUBLIC_BUCKET \
-      GARAGE_PUBLIC_BUCKET_MAX_SIZE \
-      GARAGE_PUBLIC_BUCKET_MAX_OBJECTS; do
-      grep -Eq "^${variable}=" "$directory/.env.example" \
-        || die "infrastructure/garage/.env.example must define $variable"
-    done
-
-    grep -Fx 'replication_factor = 1' "$directory/garage.toml" >/dev/null \
-      || die "Garage single-node deployment must use replication_factor = 1"
-    grep -Fx 'db_engine = "sqlite"' "$directory/garage.toml" >/dev/null \
-      || die "Garage single-node metadata must use SQLite"
-    grep -Fx 'metadata_fsync = true' "$directory/garage.toml" >/dev/null \
-      || die "Garage metadata fsync must be enabled"
-    grep -Fx 'data_fsync = true' "$directory/garage.toml" >/dev/null \
-      || die "Garage data fsync must be enabled"
     grep -Fx 'rpc_bind_addr = "127.0.0.1:3901"' "$directory/garage.toml" >/dev/null \
       || die "Garage RPC must bind only to container loopback in single-node mode"
   fi
 
   infrastructure_count=$((infrastructure_count + 1))
 done
-
-[[ "$postgres_found" == true ]] || die "PostgreSQL infrastructure stack is required."
-[[ "$garage_found" == true ]] || die "Garage infrastructure stack is required."
 
 printf '==> Validate application Compose models\n'
 app_count=0
@@ -278,28 +268,23 @@ for directory in "$APPS_DIR"/*; do
   prepare_validation_stack "$directory"
   app_validation_dir=$VALIDATION_DIR
 
-  app_model="$(compose_config "$app_validation_dir" "$app_validation_dir/.env.example")"
-  app_services="$(compose_config "$app_validation_dir" "$app_validation_dir/.env.example" --services)"
-  app_variables="$(compose_config "$app_validation_dir" "$app_validation_dir/.env.example" --variables)"
-  app_migration_model="$(
-    compose_profile_config \
+  app_model="$(
+    compose_stack \
       "$app_validation_dir" \
       "$app_validation_dir/.env.example" \
-      '*'
+      --profile '*' \
+      config
   )"
-  app_migration_services="$(
-    compose_profile_config \
-      "$app_validation_dir" \
-      "$app_validation_dir/.env.example" \
-      '*' \
-      --services
+  app_services="$(
+    compose_stack "$app_validation_dir" "$app_validation_dir/.env.example" config --services
   )"
-  migration_service="${app}-migrate"
+  app_variables="$(
+    compose_stack "$app_validation_dir" "$app_validation_dir/.env.example" config --variables
+  )"
 
   grep -Fx "$app" <<<"$app_services" >/dev/null \
     || die "Primary service in apps/$app/compose.yaml must be named $app"
-  grep -Fx "name: $app" <<<"$app_model" >/dev/null \
-    || die "Compose project name must resolve to $app"
+  app_service_block="$(compose_model_block "$app_model" "$app")"
 
   for variable in IMAGE_REPOSITORY APP_DOMAIN IMAGE_TAG; do
     awk -v variable="$variable" \
@@ -311,59 +296,11 @@ for directory in "$APPS_DIR"/*; do
   if grep -Eq '^    (container_name|ports):' <<<"$app_model"; then
     die "apps/$app/compose.yaml must not set container_name or publish host ports"
   fi
-  grep -Eq '^      traefik-net:' <<<"$app_model" \
+  grep -Eq '^      traefik-net:' <<<"$app_service_block" \
     || die "apps/$app/compose.yaml must attach a service to traefik-net"
-
-  if grep -Fx -- "$migration_service" <<<"$app_migration_services" >/dev/null; then
-    app_service_block="$(compose_service_block "$app_migration_model" "$app")"
-    migration_service_block="$(compose_service_block "$app_migration_model" "$migration_service")"
-    migration_source_block="$(compose_service_block "$(<"$directory/compose.yaml")" "$migration_service")"
-    app_image="$(sed -n 's/^    image: //p' <<<"$app_service_block")"
-    migration_image="$(sed -n 's/^    image: //p' <<<"$migration_service_block")"
-
-    [[ -n "$migration_service_block" ]] \
-      || die "Unable to inspect migration service: $migration_service"
-    [[ -n "$app_image" && "$migration_image" == "$app_image" ]] \
-      || die "apps/$app migration service must use the same image as $app"
-    grep -A2 -Fx '    profiles:' <<<"$migration_service_block" | grep -Fx '      - migration' >/dev/null \
-      || die "apps/$app migration service must use the migration profile"
-    grep -Fx '    restart: "no"' <<<"$migration_service_block" >/dev/null \
-      || die "apps/$app migration service must set restart: no"
-    grep -Fx '    command:' <<<"$migration_service_block" >/dev/null \
-      || die "apps/$app migration service must define an explicit command"
-    grep -A2 -Fx '    security_opt:' <<<"$migration_service_block" \
-      | grep -Fx '      - no-new-privileges:true' >/dev/null \
-      || die "apps/$app migration service must enable no-new-privileges"
-    grep -A3 -Fx '    env_file:' <<<"$migration_source_block" \
-      | grep -Fx '      - path: ./.env.migration' >/dev/null \
-      || die "apps/$app migration service must read .env.migration"
-    grep -A3 -Fx '    env_file:' <<<"$migration_source_block" \
-      | grep -Fx '        required: true' >/dev/null \
-      || die "apps/$app .env.migration must be required"
-
-    if grep -Eq '^    (container_name|labels|ports):' <<<"$migration_service_block"; then
-      die "apps/$app migration service must not set container_name, labels or host ports"
-    fi
-    if grep -Eq '^      traefik-net:' <<<"$migration_service_block"; then
-      die "apps/$app migration service must not attach to traefik-net"
-    fi
-  fi
-
-  if [[ "$app" == "codebuff-next" ]]; then
-    grep -Eq '^      postgres-net:' <<<"$app_model" \
-      || die "apps/codebuff-next/compose.yaml must attach the service to postgres-net"
-    grep -A4 -Fx '  postgres-net:' <<<"$app_model" | grep -Fx '    external: true' >/dev/null \
-      || die "apps/codebuff-next/compose.yaml must declare postgres-net as external"
-    if grep -Fx -- "$migration_service" <<<"$app_migration_services" >/dev/null; then
-      grep -Eq '^      postgres-net:' <<<"$migration_service_block" \
-        || die "apps/codebuff-next migration service must attach to postgres-net"
-    fi
-  fi
 
   app_count=$((app_count + 1))
 done
-
-[[ "$app_count" -gt 0 ]] || die "No applications found under apps/."
 
 printf 'Validation passed for Traefik, %s shared infrastructure service(s) and %s application(s).\n' \
   "$infrastructure_count" "$app_count"

@@ -249,16 +249,16 @@ Pull Request 和 main push 会验证：
 
 - 所有 Compose 模型
 - 应用目录、主 service 和必要部署变量
-- 禁止 `container_name` 和应用宿主机端口
+- 禁止应用使用 `container_name` 或宿主机端口
 - 禁止提交实际环境文件
-- Traefik 镜像固定和 Docker Socket 关键边界
+- Traefik 镜像固定和 Docker Socket Proxy 只读边界
 - PostgreSQL 镜像、持久化目录、专用网络和非公网暴露边界
-- Garage 镜像、持久化卷、单节点配置、内部 S3 网络和只读公网路由边界
+- Garage 镜像、持久化卷、RPC 回环、内部 S3 网络和只读公网路由边界
 - Gitleaks 扫描当前提交可达的完整 Git 历史
 - ShellCheck
 - actionlint
 
-`scripts/validate.sh` 只强制执行会直接影响部署安全和可恢复性的核心规则；完整应用约定仍以 `docs/app-contract.md` 为准，并通过代码评审维护。
+`scripts/validate.sh` 只解析 Compose、检查部署脚本依赖的主 service/变量契约，并强制执行会直接影响公网暴露、Docker Socket 与数据卷安全的少数边界。服务清单、调优参数和完整应用约定仍以运维文档、`docs/app-contract.md` 与代码评审为准。
 
 ## 公开仓库安全边界
 
